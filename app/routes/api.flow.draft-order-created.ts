@@ -193,13 +193,13 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
-    logger.error(
+   logger.error(
       {
         event: "flow-draft-order-created.unhandled-error",
         shopDomain,
         draftOrderId,
         draftOrderName,
-        error,
+        error: serializeUnknownError(error),
       },
       "Draft order created Flow request failed with unhandled error",
     );
@@ -249,4 +249,40 @@ function mapErrorCodeToHttpStatus(
     default:
       return 500;
   }
+}
+function serializeUnknownError(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+  }
+
+  if (
+    error &&
+    typeof error === "object" &&
+    "status" in error &&
+    "statusText" in error
+  ) {
+    const responseLike = error as {
+      status?: unknown;
+      statusText?: unknown;
+      data?: unknown;
+      body?: unknown;
+    };
+
+    return {
+      type: "response_like",
+      status: responseLike.status,
+      statusText: responseLike.statusText,
+      data: responseLike.data ?? null,
+      body: responseLike.body ?? null,
+    };
+  }
+
+  return {
+    type: typeof error,
+    value: error,
+  };
 }
