@@ -35,6 +35,7 @@ export type DraftOrderBudgetReviewResult = {
   companyCreditLimit: string;
   companyRemainingCredit: string;
   companyAmountExceededBy: string;
+  invoiceUrl: string;
   reviewUrl: string;
   emailSubject: string;
   emailBody: string;
@@ -175,10 +176,8 @@ export async function reviewDraftOrderBudget({
   const notify = decision.status === "exceeded";
   const resolvedApproverEmail = decision.approverEmail ?? "";
 
-  const reviewUrl =
-    buildDraftOrderAdminUrl(shopDomain, draftOrder.id) ||
-    draftOrder.invoiceUrl ||
-    "";
+  const invoiceUrl = draftOrder.invoiceUrl ?? "";
+  const reviewUrl = buildDraftOrderAdminUrl(shopDomain, draftOrder.id) || "";
 
   const amountExceededBy = formatDecimal(decision.amountExceededBy);
   const orderTotalFormatted = formatDecimal(orderTotalValue);
@@ -219,6 +218,7 @@ export async function reviewDraftOrderBudget({
         companyLocationName,
         orderTotal: orderTotalFormatted,
         currency,
+        invoiceUrl,
         reviewUrl,
         reason: decision.reason,
         triggerScope: decision.triggerScope,
@@ -315,6 +315,7 @@ export async function reviewDraftOrderBudget({
     companyCreditLimit: companyCreditLimitFormatted,
     companyRemainingCredit: companyRemainingCreditFormatted,
     companyAmountExceededBy: companyAmountExceededByFormatted,
+    invoiceUrl,
     reviewUrl,
     emailSubject,
     emailBody,
@@ -661,6 +662,7 @@ function buildApprovalEmailBody({
   companyLocationName,
   orderTotal,
   currency,
+  invoiceUrl,
   reviewUrl,
   reason,
   triggerScope,
@@ -676,6 +678,7 @@ function buildApprovalEmailBody({
   companyLocationName: string;
   orderTotal: string;
   currency: string;
+  invoiceUrl: string;
   reviewUrl: string;
   reason: string;
   triggerScope: "customer" | "company" | "both" | "none";
@@ -696,25 +699,23 @@ function buildApprovalEmailBody({
           : "No budget trigger";
 
   return [
-    `A B2B draft order requires approval.`,
+    `An order has been created on www.centralcleaningsupplies.com.au which has exceeded your assigned credit limit.`,
     ``,
     `Draft order: ${draftOrderName}`,
     `Company: ${companyName}`,
     `Location: ${companyLocationName}`,
     `Order total: ${currency} ${orderTotal}`,
-    ``,
     `Triggered by: ${triggerLabel}`,
     `Reason: ${reason}`,
-    ``,
     `Customer credit limit: ${currency} ${customerCreditLimit}`,
     `Customer remaining credit: ${currency} ${customerRemainingCredit}`,
     `Customer amount exceeded by: ${currency} ${customerAmountExceededBy}`,
-    ``,
     `Company credit limit: ${currency} ${companyCreditLimit}`,
     `Company remaining credit: ${currency} ${companyRemainingCredit}`,
     `Company amount exceeded by: ${currency} ${companyAmountExceededBy}`,
     ``,
-    reviewUrl ? `Review link: ${reviewUrl}` : "",
+    invoiceUrl ? `Customer checkout link: ${invoiceUrl}` : "",
+    reviewUrl ? `Internal admin review link: ${reviewUrl}` : "",
   ]
     .filter(Boolean)
     .join("\n");
