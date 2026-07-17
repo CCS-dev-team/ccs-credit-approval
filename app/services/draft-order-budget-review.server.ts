@@ -207,7 +207,7 @@ export async function reviewDraftOrderBudget({
     decision.remainingSnapshot ?? 0,
   );
 
-  const emailSubject = notify
+    const emailSubject = notify
     ? `B2B draft order ${draftOrder.name} submitted for approval`
     : "";
 
@@ -219,7 +219,6 @@ export async function reviewDraftOrderBudget({
         orderTotal: orderTotalFormatted,
         currency,
         invoiceUrl,
-        reviewUrl,
         reason: decision.reason,
         triggerScope: decision.triggerScope,
         customerCreditLimit: customerCreditLimitFormatted,
@@ -231,16 +230,39 @@ export async function reviewDraftOrderBudget({
       })
     : "";
 
+  const emailHtml = notify
+    ? buildApprovalEmailHtml({
+        draftOrderName: draftOrder.name,
+        companyName,
+        companyLocationName,
+        orderTotal: orderTotalFormatted,
+        currency,
+        invoiceUrl,
+        reason: decision.reason,
+        triggerScope: decision.triggerScope,
+        customerCreditLimit: customerCreditLimitFormatted,
+        customerRemainingCredit: customerRemainingCreditFormatted,
+        customerAmountExceededBy: customerAmountExceededByFormatted,
+        companyCreditLimit: companyCreditLimitFormatted,
+        companyRemainingCredit: companyRemainingCreditFormatted,
+        companyAmountExceededBy: companyAmountExceededByFormatted,
+      })
+    : "";
+
+
   let emailSent = false;
   let notificationStatus: "not_required" | "sent" | "failed" = "not_required";
   let notifiedAt: string | null = null;
 
   if (notify) {
-    const emailResult = await approvalEmailService.send({
+            const emailResult = await approvalEmailService.send({
       to: resolvedApproverEmail,
       subject: emailSubject,
       text: emailBody,
+      html: emailHtml,
     });
+
+
 
     emailSent = emailResult.ok;
     notificationStatus = emailResult.ok ? "sent" : "failed";
@@ -663,7 +685,6 @@ function buildApprovalEmailBody({
   orderTotal,
   currency,
   invoiceUrl,
-  reviewUrl,
   reason,
   triggerScope,
   customerCreditLimit,
@@ -679,7 +700,6 @@ function buildApprovalEmailBody({
   orderTotal: string;
   currency: string;
   invoiceUrl: string;
-  reviewUrl: string;
   reason: string;
   triggerScope: "customer" | "company" | "both" | "none";
   customerCreditLimit: string;
@@ -714,9 +734,81 @@ function buildApprovalEmailBody({
     `Company remaining credit: ${currency} ${companyRemainingCredit}`,
     `Company amount exceeded by: ${currency} ${companyAmountExceededBy}`,
     ``,
-    invoiceUrl ? `Customer checkout link: ${invoiceUrl}` : "",
-    reviewUrl ? `Internal admin review link: ${reviewUrl}` : "",
+    invoiceUrl ? `Order Approval Link: ${invoiceUrl}` : "",
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function buildApprovalEmailHtml({
+  draftOrderName,
+  companyName,
+  companyLocationName,
+  orderTotal,
+  currency,
+  invoiceUrl,
+  reason,
+  triggerScope,
+  customerCreditLimit,
+  customerRemainingCredit,
+  customerAmountExceededBy,
+  companyCreditLimit,
+  companyRemainingCredit,
+  companyAmountExceededBy,
+}: {
+  draftOrderName: string;
+  companyName: string;
+  companyLocationName: string;
+  orderTotal: string;
+  currency: string;
+  invoiceUrl: string;
+  reason: string;
+  triggerScope: "customer" | "company" | "both" | "none";
+  customerCreditLimit: string;
+  customerRemainingCredit: string;
+  customerAmountExceededBy: string;
+  companyCreditLimit: string;
+  companyRemainingCredit: string;
+  companyAmountExceededBy: string;
+}) {
+  const triggerLabel =
+    triggerScope === "both"
+      ? "Individual customer and company credit exceeded"
+      : triggerScope === "customer"
+        ? "Individual customer credit exceeded"
+        : triggerScope === "company"
+          ? "Company credit exceeded"
+          : "No budget trigger";
+
+  const orderApprovalLinkHtml = invoiceUrl
+    ? `<p><strong>Order Approval Link:</strong> <a href="${escapeHtml(
+        invoiceUrl,
+      )}" target="_blank" rel="noopener noreferrer">Order Approval Link</a></p>`
+    : "";
+
+  return `
+    <p>An order has been created on www.centralcleaningsupplies.com.au which has exceeded your assigned credit limit.</p>
+    <p><strong>Draft order:</strong> ${escapeHtml(draftOrderName)}<br />
+    <strong>Company:</strong> ${escapeHtml(companyName)}<br />
+    <strong>Location:</strong> ${escapeHtml(companyLocationName)}<br />
+    <strong>Order total:</strong> ${escapeHtml(currency)} ${escapeHtml(orderTotal)}<br />
+    <strong>Triggered by:</strong> ${escapeHtml(triggerLabel)}<br />
+    <strong>Reason:</strong> ${escapeHtml(reason)}<br />
+    <strong>Customer credit limit:</strong> ${escapeHtml(currency)} ${escapeHtml(customerCreditLimit)}<br />
+    <strong>Customer remaining credit:</strong> ${escapeHtml(currency)} ${escapeHtml(customerRemainingCredit)}<br />
+    <strong>Customer amount exceeded by:</strong> ${escapeHtml(currency)} ${escapeHtml(customerAmountExceededBy)}<br />
+    <strong>Company credit limit:</strong> ${escapeHtml(currency)} ${escapeHtml(companyCreditLimit)}<br />
+    <strong>Company remaining credit:</strong> ${escapeHtml(currency)} ${escapeHtml(companyRemainingCredit)}<br />
+    <strong>Company amount exceeded by:</strong> ${escapeHtml(currency)} ${escapeHtml(companyAmountExceededBy)}</p>
+    ${orderApprovalLinkHtml}
+  `.trim();
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
