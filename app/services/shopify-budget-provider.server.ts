@@ -14,8 +14,47 @@ export class ShopifyBudgetProvider implements BudgetDataProvider {
   constructor(private admin: AdminGraphqlClient) {}
 
   async getCustomerCredit(customerId: string): Promise<CreditSnapshot | null> {
-    // Customer object access is still blocked in the current dev-store flow.
-    return null;
+    const query = `#graphql
+      query GetCustomerCredit($id: ID!) {
+        customer(id: $id) {
+          id
+          creditLimit: metafield(namespace: "custom", key: "credit_limit") {
+            value
+            type
+          }
+          remainingCredit: metafield(namespace: "custom", key: "remaining_credit") {
+            value
+            type
+          }
+          creditLog: metafield(namespace: "custom", key: "credit_log") {
+            value
+            type
+          }
+        }
+      }
+    `;
+
+    const response = await this.admin.graphql(query, {
+      variables: { id: customerId },
+    });
+
+    const json = await response.json();
+    const customer = json?.data?.customer;
+
+    if (!customer) {
+      return null;
+    }
+
+    return {
+      creditLimit:
+        customer.creditLimit?.value != null
+          ? Number(customer.creditLimit.value)
+          : null,
+      remainingCredit:
+        customer.remainingCredit?.value != null
+          ? Number(customer.remainingCredit.value)
+          : null,
+    };
   }
 
   async getCompanyCredit(companyId: string): Promise<CreditSnapshot | null> {

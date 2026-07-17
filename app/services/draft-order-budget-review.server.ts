@@ -17,6 +17,7 @@ export type DraftOrderBudgetReviewResult = {
   notificationStatus: "not_required" | "sent" | "failed";
   budgetStatus: "within_limit" | "exceeded";
   budgetReason: string;
+  budgetTriggerScope: "customer" | "company" | "both" | "none";
   approverEmail: string;
   fallbackUsed: boolean;
   companyName: string;
@@ -28,6 +29,12 @@ export type DraftOrderBudgetReviewResult = {
   creditLimit: string;
   remainingCredit: string;
   amountExceededBy: string;
+  customerCreditLimit: string;
+  customerRemainingCredit: string;
+  customerAmountExceededBy: string;
+  companyCreditLimit: string;
+  companyRemainingCredit: string;
+  companyAmountExceededBy: string;
   reviewUrl: string;
   emailSubject: string;
   emailBody: string;
@@ -62,6 +69,9 @@ type DraftOrderGraphqlResponse = {
       totalPrice: string | number | null;
       presentmentCurrencyCode?: string | null;
       invoiceUrl?: string | null;
+      customer?: {
+        id: string;
+      } | null;
       purchasingEntity?: {
         __typename?: string;
         company?: {
@@ -135,6 +145,15 @@ export async function reviewDraftOrderBudget({
     );
   }
 
+  const customerId = draftOrder.customer?.id;
+
+  if (!customerId) {
+    throw new DraftOrderBudgetReviewError(
+      "BAD_REQUEST",
+      "Draft order does not have a customer attached",
+    );
+  }
+
   const companyId = purchasingEntity.company.id;
   const companyName = purchasingEntity.company.name ?? "";
   const companyLocationId = purchasingEntity.location.id;
@@ -143,13 +162,11 @@ export async function reviewDraftOrderBudget({
   const provider = new ShopifyBudgetProvider(admin);
   const decisionService = new BudgetDecisionService(provider);
 
-  const companyCredit = await provider.getCompanyCredit(companyId);
-
   const orderTotalValue = toNumber(draftOrder.totalPrice);
   const currency = draftOrder.presentmentCurrencyCode ?? "AUD";
 
   const decision = await decisionService.resolve({
-    customerId: "gid://shopify/Customer/DEV-PLACEHOLDER",
+    customerId,
     companyId,
     companyLocationId,
     orderTotal: orderTotalValue,
@@ -165,11 +182,30 @@ export async function reviewDraftOrderBudget({
 
   const amountExceededBy = formatDecimal(decision.amountExceededBy);
   const orderTotalFormatted = formatDecimal(orderTotalValue);
-  const creditLimitFormatted = formatDecimal(
-    decision.limitApplied ?? companyCredit?.creditLimit ?? 0,
+
+  const customerCreditLimitFormatted = formatDecimal(
+    decision.customerLimitApplied ?? 0,
   );
+  const customerRemainingCreditFormatted = formatDecimal(
+    decision.customerRemainingSnapshot ?? 0,
+  );
+  const customerAmountExceededByFormatted = formatDecimal(
+    decision.customerAmountExceededBy,
+  );
+
+  const companyCreditLimitFormatted = formatDecimal(
+    decision.companyLimitApplied ?? 0,
+  );
+  const companyRemainingCreditFormatted = formatDecimal(
+    decision.companyRemainingSnapshot ?? 0,
+  );
+  const companyAmountExceededByFormatted = formatDecimal(
+    decision.companyAmountExceededBy,
+  );
+
+  const creditLimitFormatted = formatDecimal(decision.limitApplied ?? 0);
   const remainingCreditFormatted = formatDecimal(
-    decision.remainingSnapshot ?? companyCredit?.remainingCredit ?? 0,
+    decision.remainingSnapshot ?? 0,
   );
 
   const emailSubject = notify
@@ -183,11 +219,15 @@ export async function reviewDraftOrderBudget({
         companyLocationName,
         orderTotal: orderTotalFormatted,
         currency,
-        creditLimit: creditLimitFormatted,
-        remainingCredit: remainingCreditFormatted,
-        amountExceededBy,
         reviewUrl,
         reason: decision.reason,
+        triggerScope: decision.triggerScope,
+        customerCreditLimit: customerCreditLimitFormatted,
+        customerRemainingCredit: customerRemainingCreditFormatted,
+        customerAmountExceededBy: customerAmountExceededByFormatted,
+        companyCreditLimit: companyCreditLimitFormatted,
+        companyRemainingCredit: companyRemainingCreditFormatted,
+        companyAmountExceededBy: companyAmountExceededByFormatted,
       })
     : "";
 
@@ -213,6 +253,7 @@ export async function reviewDraftOrderBudget({
           draftOrderId: draftOrder.id,
           companyId,
           companyLocationId,
+          customerId,
           approverEmail: resolvedApproverEmail,
           notificationStatus,
           emailError: emailResult.error,
@@ -235,10 +276,12 @@ export async function reviewDraftOrderBudget({
     {
       event: "draft-order-budget-review.complete",
       draftOrderId: draftOrder.id,
+      customerId,
       companyId,
       companyLocationId,
       budgetStatus: decision.status,
       budgetReason: decision.reason,
+      budgetTriggerScope: decision.triggerScope,
       notify,
       approverEmail: resolvedApproverEmail,
       emailSent,
@@ -254,6 +297,7 @@ export async function reviewDraftOrderBudget({
     notificationStatus,
     budgetStatus: decision.status,
     budgetReason: decision.reason,
+    budgetTriggerScope: decision.triggerScope,
     approverEmail: resolvedApproverEmail,
     fallbackUsed: decision.fallbackUsed,
     companyName,
@@ -265,6 +309,12 @@ export async function reviewDraftOrderBudget({
     creditLimit: creditLimitFormatted,
     remainingCredit: remainingCreditFormatted,
     amountExceededBy,
+    customerCreditLimit: customerCreditLimitFormatted,
+    customerRemainingCredit: customerRemainingCreditFormatted,
+    customerAmountExceededBy: customerAmountExceededByFormatted,
+    companyCreditLimit: companyCreditLimitFormatted,
+    companyRemainingCredit: companyRemainingCreditFormatted,
+    companyAmountExceededBy: companyAmountExceededByFormatted,
     reviewUrl,
     emailSubject,
     emailBody,
@@ -286,6 +336,9 @@ async function getDraftOrderForBudgetReview({
         totalPrice
         presentmentCurrencyCode
         invoiceUrl
+        customer {
+          id
+        }
         purchasingEntity {
           __typename
           ... on PurchasingCompany {
@@ -389,6 +442,13 @@ async function writeDraftOrderBudgetMetafields({
     {
       ownerId: draftOrderId,
       namespace: "custom",
+      key: "budget_trigger_scope",
+      type: "single_line_text_field",
+      value: decision.triggerScope,
+    },
+    {
+      ownerId: draftOrderId,
+      namespace: "custom",
       key: "budget_amount_exceeded_by",
       type: "number_decimal",
       value: String(decision.amountExceededBy),
@@ -435,6 +495,54 @@ async function writeDraftOrderBudgetMetafields({
       value: String(decision.remainingSnapshot),
     });
   }
+
+  metafields.push({
+    ownerId: draftOrderId,
+    namespace: "custom",
+    key: "budget_customer_limit_applied",
+    type: "number_decimal",
+    value: String(decision.customerLimitApplied ?? 0),
+  });
+
+  metafields.push({
+    ownerId: draftOrderId,
+    namespace: "custom",
+    key: "budget_customer_remaining_snapshot",
+    type: "number_decimal",
+    value: String(decision.customerRemainingSnapshot ?? 0),
+  });
+
+  metafields.push({
+    ownerId: draftOrderId,
+    namespace: "custom",
+    key: "budget_customer_amount_exceeded_by",
+    type: "number_decimal",
+    value: String(decision.customerAmountExceededBy),
+  });
+
+  metafields.push({
+    ownerId: draftOrderId,
+    namespace: "custom",
+    key: "budget_company_limit_applied",
+    type: "number_decimal",
+    value: String(decision.companyLimitApplied ?? 0),
+  });
+
+  metafields.push({
+    ownerId: draftOrderId,
+    namespace: "custom",
+    key: "budget_company_remaining_snapshot",
+    type: "number_decimal",
+    value: String(decision.companyRemainingSnapshot ?? 0),
+  });
+
+  metafields.push({
+    ownerId: draftOrderId,
+    namespace: "custom",
+    key: "budget_company_amount_exceeded_by",
+    type: "number_decimal",
+    value: String(decision.companyAmountExceededBy),
+  });
 
   if (decision.approverEmail) {
     metafields.push({
@@ -553,23 +661,40 @@ function buildApprovalEmailBody({
   companyLocationName,
   orderTotal,
   currency,
-  creditLimit,
-  remainingCredit,
-  amountExceededBy,
   reviewUrl,
   reason,
+  triggerScope,
+  customerCreditLimit,
+  customerRemainingCredit,
+  customerAmountExceededBy,
+  companyCreditLimit,
+  companyRemainingCredit,
+  companyAmountExceededBy,
 }: {
   draftOrderName: string;
   companyName: string;
   companyLocationName: string;
   orderTotal: string;
   currency: string;
-  creditLimit: string;
-  remainingCredit: string;
-  amountExceededBy: string;
   reviewUrl: string;
   reason: string;
+  triggerScope: "customer" | "company" | "both" | "none";
+  customerCreditLimit: string;
+  customerRemainingCredit: string;
+  customerAmountExceededBy: string;
+  companyCreditLimit: string;
+  companyRemainingCredit: string;
+  companyAmountExceededBy: string;
 }) {
+  const triggerLabel =
+    triggerScope === "both"
+      ? "Individual customer and company credit exceeded"
+      : triggerScope === "customer"
+        ? "Individual customer credit exceeded"
+        : triggerScope === "company"
+          ? "Company credit exceeded"
+          : "No budget trigger";
+
   return [
     `A B2B draft order requires approval.`,
     ``,
@@ -577,10 +702,18 @@ function buildApprovalEmailBody({
     `Company: ${companyName}`,
     `Location: ${companyLocationName}`,
     `Order total: ${currency} ${orderTotal}`,
-    `Credit limit: ${currency} ${creditLimit}`,
-    `Remaining credit: ${currency} ${remainingCredit}`,
-    `Amount exceeded by: ${currency} ${amountExceededBy}`,
+    ``,
+    `Triggered by: ${triggerLabel}`,
     `Reason: ${reason}`,
+    ``,
+    `Customer credit limit: ${currency} ${customerCreditLimit}`,
+    `Customer remaining credit: ${currency} ${customerRemainingCredit}`,
+    `Customer amount exceeded by: ${currency} ${customerAmountExceededBy}`,
+    ``,
+    `Company credit limit: ${currency} ${companyCreditLimit}`,
+    `Company remaining credit: ${currency} ${companyRemainingCredit}`,
+    `Company amount exceeded by: ${currency} ${companyAmountExceededBy}`,
+    ``,
     reviewUrl ? `Review link: ${reviewUrl}` : "",
   ]
     .filter(Boolean)
