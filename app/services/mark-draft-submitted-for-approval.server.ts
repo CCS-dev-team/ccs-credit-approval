@@ -77,7 +77,7 @@ export async function markDraftSubmittedForApproval({
   const metafields = [
     {
       ownerId,
-      namespace: "workflow",
+      namespace: "custom",
       key: "approval_state",
       type: "single_line_text_field",
       value: "submitted",

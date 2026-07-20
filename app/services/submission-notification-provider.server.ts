@@ -88,10 +88,10 @@ const DRAFT_SUBMISSION_CONTEXT_QUERY = `#graphql
         displayName
         email
       }
-      metafieldApprovalState: metafield(namespace: "workflow", key: "approval_state") {
+      metafieldApprovalState: metafield(namespace: "custom", key: "approval_state") {
         value
       }
-      metafieldSubmissionNotifiedAt: metafield(namespace: "workflow", key: "submission_notified_at") {
+      metafieldSubmissionNotifiedAt: metafield(namespace: "custom", key: "submission_notified_at") {
         value
       }
       purchasingEntity {
@@ -117,7 +117,7 @@ const COMPANY_LOCATION_APPROVER_QUERY = `#graphql
       __typename
       ... on CompanyLocation {
         id
-        metafield(namespace: "workflow", key: "approver_email") {
+        metafield(namespace: "custom", key: "workflow_approver_email") {
           value
         }
       }
@@ -199,7 +199,7 @@ export class ShopifySubmissionNotificationDataProvider
       name: draft.name,
       createdAt: draft.createdAt ?? null,
 
-      // Use known-working fields from the existing credit approval implementation.
+      // Keep these null unless/until you add proven fields for them.
       status: null,
       isOpen: null,
 
@@ -241,7 +241,7 @@ export class ShopifySubmissionNotificationDataProvider
     const metafields: Array<Record<string, unknown>> = [
       {
         ownerId,
-        namespace: "workflow",
+        namespace: "custom",
         key: "submission_notified_at",
         type: "date_time",
         value: input.notifiedAt,
@@ -251,7 +251,7 @@ export class ShopifySubmissionNotificationDataProvider
     if (input.approvalState) {
       metafields.push({
         ownerId,
-        namespace: "workflow",
+        namespace: "custom",
         key: "approval_state",
         type: "single_line_text_field",
         value: input.approvalState,
@@ -415,8 +415,7 @@ function parseMoneyAmount(value?: string | number | null): number | null {
     return null;
   }
 
-  const parsed =
-    typeof value === "number" ? value : Number(value);
+  const parsed = typeof value === "number" ? value : Number(value);
 
   return Number.isFinite(parsed) ? parsed : null;
 }
