@@ -2,6 +2,7 @@ import { BudgetDecisionService } from "./budget-decision.server";
 import { ShopifyBudgetProvider } from "./shopify-budget-provider.server";
 import { logger } from "../lib/logger.server";
 import { markDraftSubmittedForApproval } from "./mark-draft-submitted-for-approval.server";
+import { processSubmissionNotification } from "./process-submission-notification.server";
 
 type AdminGraphqlClient = {
   graphql: (
@@ -259,14 +260,54 @@ export async function reviewDraftOrderBudget({
       notificationStatus = "failed";
       notifiedAt = null;
     } else {
-      // Compatibility note:
-      // emailSent/notificationStatus are preserved for the existing result contract.
-      // In the new flow, "sent" means the submission-notification flow was successfully
-      // triggered by marking workflow.approval_state = submitted. The actual email is
-      // sent asynchronously by the draft-order webhook flow.
-      emailSent = true;
-      notificationStatus = "sent";
-      notifiedAt = null;
+      const submissionResult = await processSubmissionNotification({
+        shop: shopDomain,
+        draftOrderId: draftOrder.id,
+        graphql: (query, options) => admin.graphql(query, options),
+      });
+
+      if (submissionResult.status === "sent") {
+        emailSent = true;
+        notificationStatus = "sent";
+        notifiedAt = new Date().toISOString();
+      } else if (
+        submissionResult.status === "skipped" &&
+        submissionResult.reason === "already_notified"
+      ) {
+        logger.info(
+          {
+            event: "draft-order-budget-review.already-notified",
+            draftOrderId: draftOrder.id,
+            companyId,
+            companyLocationId,
+            customerId,
+            approverEmail: resolvedApproverEmail,
+          },
+          "Draft order submission notification was already sent",
+        );
+
+        emailSent = true;
+        notificationStatus = "sent";
+        notifiedAt = new Date().toISOString();
+      } else {
+        logger.error(
+          {
+            event: "draft-order-budget-review.submission-notification-failed",
+            draftOrderId: draftOrder.id,
+            companyId,
+            companyLocationId,
+            customerId,
+            approverEmail: resolvedApproverEmail,
+            submissionStatus: submissionResult.status,
+            submissionReason: submissionResult.reason,
+          },
+          "Submission notification processing failed after draft was marked submitted",
+        );
+
+        emailSent = false;
+        notificationStatus = "failed";
+        notifiedAt = null;
+      }
     }
   }
 
