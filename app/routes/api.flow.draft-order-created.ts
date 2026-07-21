@@ -12,6 +12,10 @@ type FlowDraftOrderCreatedRequestBody = {
   draftOrderId?: string;
   draftOrderName?: string | null;
   shopDomain?: string;
+  purchaseOrderNumber?: string | null;
+  poNumber?: string | null;
+  note?: string | null;
+  draftOrderNote?: string | null;
 };
 
 type ErrorResponse = {
@@ -96,11 +100,34 @@ export async function action({ request }: ActionFunctionArgs) {
     );
   }
 
-  const draftOrderId = (body.draftOrderId ?? "").trim();
-  const draftOrderName = body.draftOrderName?.trim() || null;
+  const draftOrderId = normalizeOptionalString(body.draftOrderId) ?? "";
+  const draftOrderName = normalizeOptionalString(body.draftOrderName);
   const headerShopDomain =
-    request.headers.get("x-shopify-shop-domain")?.trim() || "";
-  const shopDomain = (body.shopDomain ?? headerShopDomain).trim();
+    normalizeOptionalString(request.headers.get("x-shopify-shop-domain")) ?? "";
+  const shopDomain =
+    normalizeOptionalString(body.shopDomain) ??
+    headerShopDomain;
+
+  const purchaseOrderNumber =
+    normalizeOptionalString(body.purchaseOrderNumber) ??
+    normalizeOptionalString(body.poNumber);
+
+  const draftOrderNote =
+    normalizeOptionalString(body.note) ??
+    normalizeOptionalString(body.draftOrderNote);
+
+  logger.info(
+    {
+      event: "flow-draft-order-created.request-body",
+      draftOrderId,
+      draftOrderName,
+      shopDomain,
+      hasPurchaseOrderNumber: Boolean(purchaseOrderNumber),
+      hasDraftOrderNote: Boolean(draftOrderNote),
+      bodyKeys: Object.keys(body ?? {}),
+    },
+    "Received Flow draft order created payload",
+  );
 
   if (!draftOrderId || !shopDomain) {
     return Response.json<ErrorResponse>(
@@ -121,6 +148,8 @@ export async function action({ request }: ActionFunctionArgs) {
       shopDomain,
       draftOrderId,
       draftOrderName,
+      purchaseOrderNumber,
+      draftOrderNote,
     });
 
     if (result.notificationStatus === "failed") {
@@ -130,6 +159,8 @@ export async function action({ request }: ActionFunctionArgs) {
           shopDomain,
           draftOrderId,
           draftOrderName,
+          hasPurchaseOrderNumber: Boolean(purchaseOrderNumber),
+          hasDraftOrderNote: Boolean(draftOrderNote),
           budgetStatus: result.budgetStatus,
           budgetReason: result.budgetReason,
           approverEmail: result.approverEmail,
@@ -140,7 +171,7 @@ export async function action({ request }: ActionFunctionArgs) {
         "Draft order review completed but notification failed; returning 503 for Flow retry",
       );
 
-           return Response.json(
+      return Response.json(
         {
           ...result,
           ok: false,
@@ -149,7 +180,6 @@ export async function action({ request }: ActionFunctionArgs) {
         },
         { status: 503 },
       );
-
     }
 
     logger.info(
@@ -158,6 +188,8 @@ export async function action({ request }: ActionFunctionArgs) {
         shopDomain,
         draftOrderId,
         draftOrderName,
+        hasPurchaseOrderNumber: Boolean(purchaseOrderNumber),
+        hasDraftOrderNote: Boolean(draftOrderNote),
         budgetStatus: result.budgetStatus,
         budgetReason: result.budgetReason,
         approverEmail: result.approverEmail,
@@ -177,6 +209,8 @@ export async function action({ request }: ActionFunctionArgs) {
           shopDomain,
           draftOrderId,
           draftOrderName,
+          hasPurchaseOrderNumber: Boolean(purchaseOrderNumber),
+          hasDraftOrderNote: Boolean(draftOrderNote),
           code: error.code,
           message: error.message,
         },
@@ -193,12 +227,14 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
-   logger.error(
+    logger.error(
       {
         event: "flow-draft-order-created.unhandled-error",
         shopDomain,
         draftOrderId,
         draftOrderName,
+        hasPurchaseOrderNumber: Boolean(purchaseOrderNumber),
+        hasDraftOrderNote: Boolean(draftOrderNote),
         error: serializeUnknownError(error),
       },
       "Draft order created Flow request failed with unhandled error",
@@ -234,6 +270,13 @@ function isAuthorizedBearerToken(
   return timingSafeEqual(providedBuffer, expectedBuffer);
 }
 
+function normalizeOptionalString(value: string | null | undefined) {
+  if (typeof value !== "string") return null;
+
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
 function mapErrorCodeToHttpStatus(
   code: DraftOrderBudgetReviewError["code"],
 ): number {
@@ -250,6 +293,7 @@ function mapErrorCodeToHttpStatus(
       return 500;
   }
 }
+
 function serializeUnknownError(error: unknown) {
   if (error instanceof Error) {
     return {
