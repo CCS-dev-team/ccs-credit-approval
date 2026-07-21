@@ -23,6 +23,11 @@ type DraftContextQueryResponse = {
     presentmentCurrencyCode?: string | null;
     invoiceUrl?: string | null;
     createdAt?: string | null;
+    note?: string | null;
+    customAttributes?: Array<{
+      key?: string | null;
+      value?: string | null;
+    }> | null;
     customer?: {
       id?: string | null;
       displayName?: string | null;
@@ -113,6 +118,11 @@ const DRAFT_SUBMISSION_CONTEXT_QUERY = `#graphql
       presentmentCurrencyCode
       invoiceUrl
       createdAt
+      note
+      customAttributes {
+        key
+        value
+      }
       customer {
         id
         displayName
@@ -253,6 +263,11 @@ export class ShopifySubmissionNotificationDataProvider
       );
     }
 
+    const poNumber =
+      findPurchaseOrderNumberFromCustomAttributes(draft.customAttributes) ??
+      extractPurchaseOrderNumberFromNote(draft.note) ??
+      null;
+
     return {
       id: draft.id,
       shop,
@@ -264,8 +279,7 @@ export class ShopifySubmissionNotificationDataProvider
 
       totalAmount: parseMoneyAmount(draft.totalPrice),
       currencyCode: draft.presentmentCurrencyCode ?? null,
-      poNumber: null,
-
+      poNumber,
 
       customerName: draft.customer?.displayName ?? null,
       customerEmail: draft.customer?.email ?? null,
@@ -532,4 +546,36 @@ function normalizeApprovalReason(
   }
 
   return null;
+}
+
+function findPurchaseOrderNumberFromCustomAttributes(
+  customAttributes?:
+    | Array<{ key?: string | null; value?: string | null }>
+    | null,
+): string | null {
+  if (!customAttributes?.length) {
+    return null;
+  }
+
+  const match = customAttributes.find((attribute) =>
+    normalizeCustomAttributeKey(attribute.key) === "purchase order number",
+  );
+
+  return normalizeString(match?.value);
+}
+
+function normalizeCustomAttributeKey(value?: string | null): string {
+  return value?.trim().toLowerCase() || "";
+}
+
+function extractPurchaseOrderNumberFromNote(note?: string | null): string | null {
+  const normalizedNote = normalizeString(note);
+
+  if (!normalizedNote) {
+    return null;
+  }
+
+  const match = normalizedNote.match(/(?:^|\|\s*)PO Number:\s*([^|]+)/i);
+
+  return normalizeString(match?.[1] ?? null);
 }
