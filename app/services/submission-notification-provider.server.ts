@@ -41,6 +41,9 @@ type DraftContextQueryResponse = {
     metafieldApprovalReason?: {
       value?: string | null;
     } | null;
+    metafieldPurchaseOrderNumber?: {
+      value?: string | null;
+    } | null;
     metafieldBudgetStatus?: {
       value?: string | null;
     } | null;
@@ -133,6 +136,9 @@ const DRAFT_SUBMISSION_CONTEXT_QUERY = `#graphql
         value
       }
       metafieldApprovalReason: metafield(namespace: "custom", key: "approval_reason") {
+        value
+      }
+      metafieldPurchaseOrderNumber: metafield(namespace: "custom", key: "purchase_order_number") {
         value
       }
       metafieldBudgetStatus: metafield(namespace: "custom", key: "budget_status") {
@@ -249,7 +255,7 @@ export class ShopifySubmissionNotificationDataProvider
 
     const companyLocationId =
       draft.purchasingEntity?.__typename === "PurchasingCompany"
-        ? draft.purchasingEntity.companyLocation?.id ?? null
+        ? normalizeString(draft.purchasingEntity.companyLocation?.id)
         : null;
 
     let approverEmail: string | null = null;
@@ -261,13 +267,18 @@ export class ShopifySubmissionNotificationDataProvider
       );
     }
 
-    const poNumber = resolvePurchaseOrderNumber(draft.customAttributes) ?? null;
+    const poNumber =
+      normalizeString(draft.metafieldPurchaseOrderNumber?.value) ??
+      resolvePurchaseOrderNumber(draft.customAttributes) ??
+      null;
 
     logger.info(
       {
         event: "submission-notification.provider.po-resolution",
         shop,
         draftOrderId: draftId,
+        metafieldPurchaseOrderNumber:
+          draft.metafieldPurchaseOrderNumber?.value ?? null,
         customAttributes: draft.customAttributes ?? [],
         resolvedPoNumber: poNumber,
       },
@@ -278,26 +289,26 @@ export class ShopifySubmissionNotificationDataProvider
       id: draft.id,
       shop,
       name: draft.name,
-      createdAt: draft.createdAt ?? null,
+      createdAt: normalizeString(draft.createdAt),
 
       status: null,
       isOpen: null,
 
       totalAmount: parseMoneyAmount(draft.totalPrice),
-      currencyCode: draft.presentmentCurrencyCode ?? null,
+      currencyCode: normalizeString(draft.presentmentCurrencyCode),
       poNumber,
 
-      customerName: draft.customer?.displayName ?? null,
-      customerEmail: draft.customer?.email ?? null,
+      customerName: normalizeString(draft.customer?.displayName),
+      customerEmail: normalizeEmail(draft.customer?.email),
 
       companyName:
         draft.purchasingEntity?.__typename === "PurchasingCompany"
-          ? draft.purchasingEntity.company?.name ?? null
+          ? normalizeString(draft.purchasingEntity.company?.name)
           : null,
       companyLocationId,
       companyLocationName:
         draft.purchasingEntity?.__typename === "PurchasingCompany"
-          ? draft.purchasingEntity.companyLocation?.name ?? null
+          ? normalizeString(draft.purchasingEntity.companyLocation?.name)
           : null,
       approverEmail: normalizeEmail(approverEmail),
 
@@ -313,7 +324,7 @@ export class ShopifySubmissionNotificationDataProvider
 
       budgetStatus: normalizeString(draft.metafieldBudgetStatus?.value),
       budgetReason: normalizeString(draft.metafieldBudgetReason?.value),
-      budgetTriggerScope: normalizeString(
+      budgetTriggerScope: normalizeBudgetTriggerScope(
         draft.metafieldBudgetTriggerScope?.value,
       ),
 
@@ -406,14 +417,16 @@ export class ShopifySubmissionNotificationDataProvider
     shop: string,
     companyLocationId: string,
   ): Promise<string | null> {
+    const locationId = toGid("CompanyLocation", companyLocationId);
+
     const response = await graphqlRequest<CompanyLocationApproverQueryResponse>(
       this.graphql,
       COMPANY_LOCATION_APPROVER_QUERY,
-      { id: companyLocationId },
+      { id: locationId },
       {
         shop,
         operation: "company_location_approver",
-        companyLocationId,
+        companyLocationId: locationId,
       },
     );
 
@@ -421,7 +434,7 @@ export class ShopifySubmissionNotificationDataProvider
       return null;
     }
 
-    return normalizeString(response.node.metafield?.value);
+    return normalizeEmail(response.node.metafield?.value);
   }
 }
 
@@ -554,6 +567,19 @@ function normalizeApprovalReason(
   return null;
 }
 
+function normalizeBudgetTriggerScope(
+  value?: string | null,
+): "customer" | "company" | "both" | "none" | null {
+  const normalized = value?.trim().toLowerCase();
+
+  if (normalized === "customer") return "customer";
+  if (normalized === "company") return "company";
+  if (normalized === "both") return "both";
+  if (normalized === "none") return "none";
+
+  return null;
+}
+
 function resolvePurchaseOrderNumber(
   customAttributes?: Array<{ key?: string | null; value?: string | null }> | null,
 ): string | null {
@@ -563,15 +589,18 @@ function resolvePurchaseOrderNumber(
 
   const acceptedKeys = new Set([
     "purchase order number",
+    "purchase order",
     "purchase order #",
     "po number",
     "po #",
+    "po#",
     "po",
     "purchase_order_number",
+    "po_number",
   ]);
 
   for (const attribute of customAttributes) {
-    const key = attribute.key?.trim().toLowerCase();
+    const key = normalizePurchaseOrderKey(attribute.key);
     const value = normalizeString(attribute.value);
 
     if (key && value && acceptedKeys.has(key)) {
@@ -580,4 +609,14 @@ function resolvePurchaseOrderNumber(
   }
 
   return null;
+}
+
+function normalizePurchaseOrderKey(value?: string | null): string | null {
+  const normalized = normalizeString(value);
+  if (!normalized) return null;
+
+  return normalized
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
 }
