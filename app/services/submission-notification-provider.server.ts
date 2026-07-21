@@ -23,6 +23,7 @@ type DraftContextQueryResponse = {
     presentmentCurrencyCode?: string | null;
     invoiceUrl?: string | null;
     createdAt?: string | null;
+    purchaseOrderNumber?: string | null;
     customAttributes?: Array<{
       key?: string | null;
       value?: string | null;
@@ -117,6 +118,7 @@ const DRAFT_SUBMISSION_CONTEXT_QUERY = `#graphql
       presentmentCurrencyCode
       invoiceUrl
       createdAt
+      purchaseOrderNumber
       customAttributes {
         key
         value
@@ -262,12 +264,10 @@ export class ShopifySubmissionNotificationDataProvider
     }
 
     const poNumber =
-      normalizeString(
-        draft.customAttributes?.find(
-          (attribute) =>
-            attribute.key?.trim().toLowerCase() === "purchase order number",
-        )?.value,
-      ) ?? null;
+  normalizeString(draft.purchaseOrderNumber) ??
+  resolvePurchaseOrderNumber(draft.customAttributes) ??
+  null;
+
 
     return {
       id: draft.id,
@@ -544,6 +544,34 @@ function normalizeApprovalReason(
 
   if (normalized === "standard") {
     return "standard";
+  }
+
+  return null;
+}
+
+function resolvePurchaseOrderNumber(
+  customAttributes?: Array<{ key?: string | null; value?: string | null }> | null,
+): string | null {
+  if (!customAttributes?.length) {
+    return null;
+  }
+
+  const acceptedKeys = new Set([
+    "purchase order number",
+    "purchase order #",
+    "po number",
+    "po #",
+    "po",
+    "purchase_order_number",
+  ]);
+
+  for (const attribute of customAttributes) {
+    const key = attribute.key?.trim().toLowerCase();
+    const value = normalizeString(attribute.value);
+
+    if (key && value && acceptedKeys.has(key)) {
+      return value;
+    }
   }
 
   return null;
