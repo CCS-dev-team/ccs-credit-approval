@@ -23,7 +23,6 @@ type DraftContextQueryResponse = {
     presentmentCurrencyCode?: string | null;
     invoiceUrl?: string | null;
     createdAt?: string | null;
-    note?: string | null;
     customAttributes?: Array<{
       key?: string | null;
       value?: string | null;
@@ -118,7 +117,6 @@ const DRAFT_SUBMISSION_CONTEXT_QUERY = `#graphql
       presentmentCurrencyCode
       invoiceUrl
       createdAt
-      note
       customAttributes {
         key
         value
@@ -264,9 +262,12 @@ export class ShopifySubmissionNotificationDataProvider
     }
 
     const poNumber =
-      findPurchaseOrderNumberFromCustomAttributes(draft.customAttributes) ??
-      extractPurchaseOrderNumberFromNote(draft.note) ??
-      null;
+      normalizeString(
+        draft.customAttributes?.find(
+          (attribute) =>
+            attribute.key?.trim().toLowerCase() === "purchase order number",
+        )?.value,
+      ) ?? null;
 
     return {
       id: draft.id,
@@ -546,36 +547,4 @@ function normalizeApprovalReason(
   }
 
   return null;
-}
-
-function findPurchaseOrderNumberFromCustomAttributes(
-  customAttributes?:
-    | Array<{ key?: string | null; value?: string | null }>
-    | null,
-): string | null {
-  if (!customAttributes?.length) {
-    return null;
-  }
-
-  const match = customAttributes.find((attribute) =>
-    normalizeCustomAttributeKey(attribute.key) === "purchase order number",
-  );
-
-  return normalizeString(match?.value);
-}
-
-function normalizeCustomAttributeKey(value?: string | null): string {
-  return value?.trim().toLowerCase() || "";
-}
-
-function extractPurchaseOrderNumberFromNote(note?: string | null): string | null {
-  const normalizedNote = normalizeString(note);
-
-  if (!normalizedNote) {
-    return null;
-  }
-
-  const match = normalizedNote.match(/(?:^|\|\s*)PO Number:\s*([^|]+)/i);
-
-  return normalizeString(match?.[1] ?? null);
 }
