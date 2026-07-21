@@ -23,7 +23,6 @@ type DraftContextQueryResponse = {
     presentmentCurrencyCode?: string | null;
     invoiceUrl?: string | null;
     createdAt?: string | null;
-    purchaseOrderNumber?: string | null;
     customer?: {
       id?: string | null;
       displayName?: string | null;
@@ -114,7 +113,6 @@ const DRAFT_SUBMISSION_CONTEXT_QUERY = `#graphql
       presentmentCurrencyCode
       invoiceUrl
       createdAt
-      purchaseOrderNumber
       customer {
         id
         displayName
@@ -266,7 +264,8 @@ export class ShopifySubmissionNotificationDataProvider
 
       totalAmount: parseMoneyAmount(draft.totalPrice),
       currencyCode: draft.presentmentCurrencyCode ?? null,
-      poNumber: normalizeString(draft.purchaseOrderNumber),
+      poNumber: null,
+
 
       customerName: draft.customer?.displayName ?? null,
       customerEmail: draft.customer?.email ?? null,
