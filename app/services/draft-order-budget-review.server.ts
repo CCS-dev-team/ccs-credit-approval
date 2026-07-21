@@ -1,35 +1,36 @@
+import { BudgetDecisionService } from "./budget-decision.server";
+import { ShopifyBudgetProvider } from "./shopify-budget-provider.server";
 import { logger } from "../lib/logger.server";
-import type { DraftApprovalReason } from "./mark-draft-submitted-for-approval.server";
+import {
+  markDraftSubmittedForApproval,
+  type DraftApprovalReason,
+} from "./mark-draft-submitted-for-approval.server";
+import { processSubmissionNotification } from "./process-submission-notification.server";
 
-type AdminGraphqlExecutor = (
-  query: string,
-  options?: { variables?: Record<string, unknown> },
-) => Promise<Response>;
+type AdminGraphqlClient = {
+  graphql: (
+    query: string,
+    options?: { variables?: Record<string, unknown> },
+  ) => Promise<Response>;
+};
 
-export type DraftSubmissionContext = {
-  id: string;
+export type DraftOrderBudgetReviewResult = {
+  ok: true;
+  notify: boolean;
+  emailSent: boolean;
+  notificationStatus: "not_required" | "sent" | "failed";
+  approvalReason: DraftApprovalReason;
+  budgetStatus: "within_limit" | "exceeded";
+  budgetReason: string;
+  budgetTriggerScope: "customer" | "company" | "both" | "none";
+  approverEmail: string;
+  fallbackUsed: boolean;
+  companyName: string;
+  companyLocationName: string;
   draftOrderId: string;
-  name: string;
   draftOrderName: string;
-  createdAt: string | null;
-  invoiceUrl: string;
   orderTotal: string;
   currency: string;
-  customerId: string | null;
-  customerName: string | null;
-  customerEmail: string | null;
-  companyId: string | null;
-  companyName: string;
-  companyLocationId: string | null;
-  companyLocationName: string;
-  approvalState: string | null;
-  submissionNotifiedAt: string | null;
-  approvalReason: DraftApprovalReason | null;
-  approverEmail: string;
-  poNumber: string | null;
-  budgetStatus: "within_limit" | "exceeded" | null;
-  budgetReason: string | null;
-  budgetTriggerScope: "customer" | "company" | "both" | "none";
   creditLimit: string;
   remainingCredit: string;
   amountExceededBy: string;
@@ -39,687 +40,913 @@ export type DraftSubmissionContext = {
   companyCreditLimit: string;
   companyRemainingCredit: string;
   companyAmountExceededBy: string;
+  invoiceUrl: string;
+  reviewUrl: string;
+  emailSubject: string;
+  emailBody: string;
 };
 
-type GraphqlError = {
-  message?: string;
-};
+export class DraftOrderBudgetReviewError extends Error {
+  code:
+    | "BAD_REQUEST"
+    | "DRAFT_NOT_FOUND"
+    | "UPSTREAM_UNAVAILABLE"
+    | "INTERNAL_ERROR";
 
-type MetafieldValue = {
-  value?: string | null;
-} | null;
+  constructor(
+    code:
+      | "BAD_REQUEST"
+      | "DRAFT_NOT_FOUND"
+      | "UPSTREAM_UNAVAILABLE"
+      | "INTERNAL_ERROR",
+    message: string,
+  ) {
+    super(message);
+    this.name = "DraftOrderBudgetReviewError";
+    this.code = code;
+  }
+}
 
-type DraftContextQueryResponse = {
-  draftOrder?: {
-    id: string;
-    name?: string | null;
-    totalPrice?: unknown;
-    presentmentCurrencyCode?: string | null;
-    invoiceUrl?: string | null;
-    createdAt?: string | null;
-    customAttributes?: Array<{
-      key?: string | null;
-      value?: string | null;
-    }> | null;
-    customer?: {
-      id?: string | null;
-      displayName?: string | null;
-      email?: string | null;
-    } | null;
-    purchasingEntity?: {
-      __typename?: string | null;
-      company?: {
-        id?: string | null;
-        name?: string | null;
+type DraftOrderGraphqlResponse = {
+  data?: {
+    draftOrder?: {
+      id: string;
+      name: string;
+      totalPrice: string | number | null;
+      presentmentCurrencyCode?: string | null;
+      invoiceUrl?: string | null;
+      customer?: {
+        id: string;
       } | null;
-      companyLocation?: {
-        id?: string | null;
-        name?: string | null;
+      purchasingEntity?: {
+        __typename?: string;
+        company?: {
+          id: string;
+          name: string | null;
+        } | null;
+        location?: {
+          id: string;
+          name: string | null;
+        } | null;
+        contact?: {
+          id: string;
+        } | null;
       } | null;
     } | null;
-    metafieldApprovalState?: MetafieldValue;
-    metafieldSubmissionNotifiedAt?: MetafieldValue;
-    metafieldApprovalReason?: MetafieldValue;
-    metafieldPurchaseOrderNumber?: MetafieldValue;
-    metafieldBudgetStatus?: MetafieldValue;
-    metafieldBudgetReason?: MetafieldValue;
-    metafieldBudgetTriggerScope?: MetafieldValue;
-    metafieldBudgetAmountExceededBy?: MetafieldValue;
-    metafieldBudgetLimitApplied?: MetafieldValue;
-    metafieldBudgetRemainingSnapshot?: MetafieldValue;
-    metafieldBudgetCustomerLimitApplied?: MetafieldValue;
-    metafieldBudgetCustomerRemainingSnapshot?: MetafieldValue;
-    metafieldBudgetCustomerAmountExceededBy?: MetafieldValue;
-    metafieldBudgetCompanyLimitApplied?: MetafieldValue;
-    metafieldBudgetCompanyRemainingSnapshot?: MetafieldValue;
-    metafieldBudgetCompanyAmountExceededBy?: MetafieldValue;
-    metafieldBudgetApproverEmailUsed?: MetafieldValue;
-  } | null;
-};
-
-type CompanyLocationApproverQueryResponse = {
-  companyLocation?: {
-    id?: string | null;
-    name?: string | null;
-    metafieldApproverEmail?: {
-      value?: string | null;
-    } | null;
-  } | null;
+  };
+  errors?: Array<{ message?: string }>;
 };
 
 type MetafieldsSetResponse = {
-  metafieldsSet?: {
-    metafields?: Array<{
-      namespace?: string | null;
-      key?: string | null;
-      value?: string | null;
-    }> | null;
-    userErrors?: Array<{
-      field?: string[] | null;
-      message?: string | null;
-      code?: string | null;
-    }> | null;
-  } | null;
+  data?: {
+    metafieldsSet?: {
+      metafields?: Array<{
+        key: string;
+        namespace: string;
+        value: string;
+      }>;
+      userErrors?: Array<{
+        field?: string[];
+        message: string;
+        code?: string;
+      }>;
+    };
+  };
+  errors?: Array<{ message?: string }>;
 };
 
-type GraphqlEnvelope<T> = {
-  data?: T;
-  errors?: GraphqlError[];
-};
+export async function reviewDraftOrderBudget({
+  admin,
+  shopDomain,
+  draftOrderId,
+  draftOrderName,
+  purchaseOrderNumber,
+  draftOrderNote,
+}: {
+  admin: AdminGraphqlClient;
+  shopDomain: string;
+  draftOrderId: string;
+  draftOrderName: string | null;
+  purchaseOrderNumber?: string | null;
+  draftOrderNote?: string | null;
+}): Promise<DraftOrderBudgetReviewResult> {
+  const draftOrder = await getDraftOrderForBudgetReview({
+    admin,
+    draftOrderId,
+  });
 
-const DRAFT_SUBMISSION_CONTEXT_QUERY = `#graphql
-  query DraftSubmissionNotificationContext($id: ID!) {
-    draftOrder(id: $id) {
-      id
-      name
-      totalPrice
-      presentmentCurrencyCode
-      invoiceUrl
-      createdAt
-      customAttributes {
-        key
-        value
+  if (!draftOrder) {
+    throw new DraftOrderBudgetReviewError(
+      "DRAFT_NOT_FOUND",
+      `Draft order ${draftOrderId} could not be found`,
+    );
+  }
+
+  const purchasingEntity = draftOrder.purchasingEntity;
+
+  if (
+    purchasingEntity?.__typename !== "PurchasingCompany" ||
+    !purchasingEntity.company?.id ||
+    !purchasingEntity.location?.id
+  ) {
+    throw new DraftOrderBudgetReviewError(
+      "BAD_REQUEST",
+      "Draft order is not a B2B purchasing company draft order",
+    );
+  }
+
+  const customerId = draftOrder.customer?.id;
+
+  if (!customerId) {
+    throw new DraftOrderBudgetReviewError(
+      "BAD_REQUEST",
+      "Draft order does not have a customer attached",
+    );
+  }
+
+  const companyId = purchasingEntity.company.id;
+  const companyName = purchasingEntity.company.name ?? "";
+  const companyLocationId = purchasingEntity.location.id;
+  const companyLocationName = purchasingEntity.location.name ?? "";
+
+  const provider = new ShopifyBudgetProvider(admin);
+  const decisionService = new BudgetDecisionService(provider);
+
+  const orderTotalValue = toNumber(draftOrder.totalPrice);
+  const currency = draftOrder.presentmentCurrencyCode ?? "AUD";
+
+  const resolvedPurchaseOrder = resolvePurchaseOrderNumber({
+    purchaseOrderNumber,
+    draftOrderNote,
+  });
+
+  const decision = await decisionService.resolve({
+    customerId,
+    companyId,
+    companyLocationId,
+    orderTotal: orderTotalValue,
+  });
+
+  const approvalReason: DraftApprovalReason =
+    decision.status === "exceeded" ? "credit_limit_exceeded" : "standard";
+
+  const notify = true;
+  const resolvedApproverEmail = decision.approverEmail ?? "";
+
+  const invoiceUrl = draftOrder.invoiceUrl ?? "";
+  const reviewUrl = buildDraftOrderAdminUrl(shopDomain, draftOrder.id) || "";
+
+  const amountExceededBy = formatDecimal(decision.amountExceededBy);
+  const orderTotalFormatted = formatDecimal(orderTotalValue);
+
+  const customerCreditLimitFormatted = formatDecimal(
+    decision.customerLimitApplied ?? 0,
+  );
+  const customerRemainingCreditFormatted = formatDecimal(
+    decision.customerRemainingSnapshot ?? 0,
+  );
+  const customerAmountExceededByFormatted = formatDecimal(
+    decision.customerAmountExceededBy,
+  );
+
+  const companyCreditLimitFormatted = formatDecimal(
+    decision.companyLimitApplied ?? 0,
+  );
+  const companyRemainingCreditFormatted = formatDecimal(
+    decision.companyRemainingSnapshot ?? 0,
+  );
+  const companyAmountExceededByFormatted = formatDecimal(
+    decision.companyAmountExceededBy,
+  );
+
+  const creditLimitFormatted = formatDecimal(decision.limitApplied ?? 0);
+  const remainingCreditFormatted = formatDecimal(
+    decision.remainingSnapshot ?? 0,
+  );
+
+  const emailSubject =
+    approvalReason === "credit_limit_exceeded"
+      ? buildExceededApprovalEmailSubject({
+          companyName,
+          draftOrderName: draftOrder.name,
+        })
+      : buildStandardApprovalEmailSubject({
+          companyName,
+          draftOrderName: draftOrder.name,
+        });
+
+  const emailBody =
+    approvalReason === "credit_limit_exceeded"
+      ? buildExceededApprovalEmailBody({
+          draftOrderName: draftOrder.name,
+          companyName,
+          companyLocationName,
+          orderTotal: orderTotalFormatted,
+          currency,
+          invoiceUrl,
+          reason: decision.reason,
+          triggerScope: decision.triggerScope,
+          customerCreditLimit: customerCreditLimitFormatted,
+          customerRemainingCredit: customerRemainingCreditFormatted,
+          customerAmountExceededBy: customerAmountExceededByFormatted,
+          companyCreditLimit: companyCreditLimitFormatted,
+          companyRemainingCredit: companyRemainingCreditFormatted,
+          companyAmountExceededBy: companyAmountExceededByFormatted,
+        })
+      : buildStandardApprovalEmailBody({
+          draftOrderName: draftOrder.name,
+          companyName,
+          companyLocationName,
+          orderTotal: orderTotalFormatted,
+          currency,
+          invoiceUrl,
+        });
+
+  let emailSent = false;
+  let notificationStatus: "not_required" | "sent" | "failed" = "not_required";
+  let notifiedAt: string | null = null;
+
+  await writeDraftOrderBudgetMetafields({
+    admin,
+    draftOrderId: draftOrder.id,
+    decision,
+    notificationStatus,
+    notifiedAt,
+    purchaseOrderNumber: resolvedPurchaseOrder.value,
+  });
+
+  if (notify) {
+    const markSubmittedResult = await markDraftSubmittedForApproval({
+      shop: shopDomain,
+      draftOrderId: draftOrder.id,
+      graphql: (query, options) => admin.graphql(query, options),
+      approvalReason,
+    });
+
+    if (!markSubmittedResult.ok) {
+      logger.error(
+        {
+          event: "draft-order-budget-review.mark-submitted-failed",
+          draftOrderId: draftOrder.id,
+          companyId,
+          companyLocationId,
+          customerId,
+          approverEmail: resolvedApproverEmail,
+          approvalReason,
+          error: markSubmittedResult.error,
+        },
+        "Failed to mark draft order as submitted for approval",
+      );
+
+      emailSent = false;
+      notificationStatus = "failed";
+      notifiedAt = null;
+    } else {
+      const submissionResult = await processSubmissionNotification({
+        shop: shopDomain,
+        draftOrderId: draftOrder.id,
+        graphql: (query, options) => admin.graphql(query, options),
+      });
+
+      if (submissionResult.status === "sent") {
+        emailSent = true;
+        notificationStatus = "sent";
+        notifiedAt = new Date().toISOString();
+      } else if (
+        submissionResult.status === "skipped" &&
+        submissionResult.reason === "already_notified"
+      ) {
+        logger.info(
+          {
+            event: "draft-order-budget-review.already-notified",
+            draftOrderId: draftOrder.id,
+            companyId,
+            companyLocationId,
+            customerId,
+            approverEmail: resolvedApproverEmail,
+            approvalReason,
+          },
+          "Draft order submission notification was already sent",
+        );
+
+        emailSent = true;
+        notificationStatus = "sent";
+        notifiedAt = new Date().toISOString();
+      } else {
+        logger.error(
+          {
+            event: "draft-order-budget-review.submission-notification-failed",
+            draftOrderId: draftOrder.id,
+            companyId,
+            companyLocationId,
+            customerId,
+            approverEmail: resolvedApproverEmail,
+            approvalReason,
+            submissionStatus: submissionResult.status,
+            submissionReason: submissionResult.reason,
+          },
+          "Submission notification processing failed after draft was marked submitted",
+        );
+
+        emailSent = false;
+        notificationStatus = "failed";
+        notifiedAt = null;
       }
-      customer {
+    }
+  }
+
+  await writeDraftOrderBudgetMetafields({
+    admin,
+    draftOrderId: draftOrder.id,
+    decision,
+    notificationStatus,
+    notifiedAt,
+    purchaseOrderNumber: resolvedPurchaseOrder.value,
+  });
+
+  logger.info(
+    {
+      event: "draft-order-budget-review.complete",
+      draftOrderId: draftOrder.id,
+      customerId,
+      companyId,
+      companyLocationId,
+      budgetStatus: decision.status,
+      budgetReason: decision.reason,
+      budgetTriggerScope: decision.triggerScope,
+      approvalReason,
+      notify,
+      approverEmail: resolvedApproverEmail,
+      emailSent,
+      notificationStatus,
+      hasPurchaseOrderNumber: Boolean(resolvedPurchaseOrder.value),
+      purchaseOrderSource: resolvedPurchaseOrder.source,
+    },
+    "Draft order budget review completed",
+  );
+
+  return {
+    ok: true,
+    notify,
+    emailSent,
+    notificationStatus,
+    approvalReason,
+    budgetStatus: decision.status,
+    budgetReason: decision.reason,
+    budgetTriggerScope: decision.triggerScope,
+    approverEmail: resolvedApproverEmail,
+    fallbackUsed: decision.fallbackUsed,
+    companyName,
+    companyLocationName,
+    draftOrderId: draftOrder.id,
+    draftOrderName: draftOrderName ?? draftOrder.name,
+    orderTotal: orderTotalFormatted,
+    currency,
+    creditLimit: creditLimitFormatted,
+    remainingCredit: remainingCreditFormatted,
+    amountExceededBy,
+    customerCreditLimit: customerCreditLimitFormatted,
+    customerRemainingCredit: customerRemainingCreditFormatted,
+    customerAmountExceededBy: customerAmountExceededByFormatted,
+    companyCreditLimit: companyCreditLimitFormatted,
+    companyRemainingCredit: companyRemainingCreditFormatted,
+    companyAmountExceededBy: companyAmountExceededByFormatted,
+    invoiceUrl,
+    reviewUrl,
+    emailSubject,
+    emailBody,
+  };
+}
+
+async function getDraftOrderForBudgetReview({
+  admin,
+  draftOrderId,
+}: {
+  admin: AdminGraphqlClient;
+  draftOrderId: string;
+}) {
+  const query = `#graphql
+    query GetDraftOrderForBudgetReview($id: ID!) {
+      draftOrder(id: $id) {
         id
-        displayName
-        email
-      }
-      purchasingEntity {
-        __typename
-        ... on PurchasingCompany {
-          company {
-            id
-            name
-          }
-          companyLocation: location {
-            id
-            name
+        name
+        totalPrice
+        presentmentCurrencyCode
+        invoiceUrl
+        customer {
+          id
+        }
+        purchasingEntity {
+          __typename
+          ... on PurchasingCompany {
+            company {
+              id
+              name
+            }
+            location {
+              id
+              name
+            }
+            contact {
+              id
+            }
           }
         }
       }
-      metafieldApprovalState: metafield(namespace: "custom", key: "approval_state") {
-        value
-      }
-      metafieldSubmissionNotifiedAt: metafield(namespace: "custom", key: "submission_notified_at") {
-        value
-      }
-      metafieldApprovalReason: metafield(namespace: "custom", key: "approval_reason") {
-        value
-      }
-      metafieldPurchaseOrderNumber: metafield(namespace: "custom", key: "purchase_order_number") {
-        value
-      }
-      metafieldBudgetStatus: metafield(namespace: "custom", key: "budget_status") {
-        value
-      }
-      metafieldBudgetReason: metafield(namespace: "custom", key: "budget_reason") {
-        value
-      }
-      metafieldBudgetTriggerScope: metafield(namespace: "custom", key: "budget_trigger_scope") {
-        value
-      }
-      metafieldBudgetAmountExceededBy: metafield(namespace: "custom", key: "budget_amount_exceeded_by") {
-        value
-      }
-      metafieldBudgetLimitApplied: metafield(namespace: "custom", key: "budget_limit_applied") {
-        value
-      }
-      metafieldBudgetRemainingSnapshot: metafield(namespace: "custom", key: "budget_remaining_snapshot") {
-        value
-      }
-      metafieldBudgetCustomerLimitApplied: metafield(namespace: "custom", key: "budget_customer_limit_applied") {
-        value
-      }
-      metafieldBudgetCustomerRemainingSnapshot: metafield(namespace: "custom", key: "budget_customer_remaining_snapshot") {
-        value
-      }
-      metafieldBudgetCustomerAmountExceededBy: metafield(namespace: "custom", key: "budget_customer_amount_exceeded_by") {
-        value
-      }
-      metafieldBudgetCompanyLimitApplied: metafield(namespace: "custom", key: "budget_company_limit_applied") {
-        value
-      }
-      metafieldBudgetCompanyRemainingSnapshot: metafield(namespace: "custom", key: "budget_company_remaining_snapshot") {
-        value
-      }
-      metafieldBudgetCompanyAmountExceededBy: metafield(namespace: "custom", key: "budget_company_amount_exceeded_by") {
-        value
-      }
-      metafieldBudgetApproverEmailUsed: metafield(namespace: "custom", key: "budget_approver_email_used") {
-        value
-      }
     }
-  }
-`;
+  `;
 
-const COMPANY_LOCATION_APPROVER_QUERY = `#graphql
-  query CompanyLocationApproverEmail($id: ID!) {
-    companyLocation(id: $id) {
-      id
-      name
-      metafieldApproverEmail: metafield(namespace: "custom", key: "approver_email") {
-        value
-      }
-    }
-  }
-`;
-
-const METAFIELDS_SET_MUTATION = `#graphql
-  mutation SubmissionNotificationMetafieldsSet($metafields: [MetafieldsSetInput!]!) {
-    metafieldsSet(metafields: $metafields) {
-      metafields {
-        namespace
-        key
-        value
-      }
-      userErrors {
-        field
-        message
-        code
-      }
-    }
-  }
-`;
-
-export class ShopifySubmissionNotificationDataProvider {
-  async getDraftSubmissionContext({
-    shop,
-    draftOrderId,
-    graphql,
-  }: {
-    shop: string;
-    draftOrderId: string;
-    graphql: AdminGraphqlExecutor;
-  }): Promise<DraftSubmissionContext | null> {
-    const draftId = toGid("DraftOrder", draftOrderId);
-
-    const data = await executeGraphql<DraftContextQueryResponse>({
-      shop,
-      graphql,
-      query: DRAFT_SUBMISSION_CONTEXT_QUERY,
-      variables: { id: draftId },
-      operationName: "DraftSubmissionNotificationContext",
-      eventBase: "submission-notification.provider.draft-context",
-    });
-
-    const draft = data.draftOrder;
-
-    if (!draft) {
-      logger.warn(
-        {
-          event: "submission-notification.provider.draft-not-found",
-          shop,
-          draftOrderId: draftId,
-        },
-        "Draft order was not returned by Shopify",
-      );
-      return null;
-    }
-
-    const companyLocationId =
-      normalizeString(draft.purchasingEntity?.companyLocation?.id) ?? null;
-
-    const approverEmailFromBudgetMetafield =
-      normalizeEmail(draft.metafieldBudgetApproverEmailUsed?.value) ?? null;
-
-    const approverEmailFromCompanyLocation = companyLocationId
-      ? await this.getCompanyLocationApproverEmail({
-          shop,
-          companyLocationId,
-          graphql,
-        })
-      : null;
-
-    const approverEmail =
-      approverEmailFromBudgetMetafield ??
-      approverEmailFromCompanyLocation ??
-      "";
-
-    const poNumber =
-      normalizeString(draft.metafieldPurchaseOrderNumber?.value) ??
-      resolvePurchaseOrderNumber(draft.customAttributes) ??
-      null;
-
-    logger.info(
-      {
-        event: "submission-notification.provider.po-resolution",
-        shop,
-        draftOrderId: draftId,
-        metafieldPurchaseOrderNumber:
-          draft.metafieldPurchaseOrderNumber?.value ?? null,
-        customAttributes: draft.customAttributes ?? [],
-        resolvedPoNumber: poNumber,
-      },
-      "Resolved purchase order number for submission notification",
-    );
-
-    return {
-      id: draft.id,
-      draftOrderId: draft.id,
-      name: normalizeString(draft.name) ?? draft.id,
-      draftOrderName: normalizeString(draft.name) ?? draft.id,
-      createdAt: normalizeString(draft.createdAt) ?? null,
-      invoiceUrl: normalizeString(draft.invoiceUrl) ?? "",
-      orderTotal: formatMoneyAmount(draft.totalPrice),
-      currency: normalizeString(draft.presentmentCurrencyCode) ?? "AUD",
-      customerId: normalizeString(draft.customer?.id) ?? null,
-      customerName: normalizeString(draft.customer?.displayName) ?? null,
-      customerEmail: normalizeEmail(draft.customer?.email) ?? null,
-      companyId: normalizeString(draft.purchasingEntity?.company?.id) ?? null,
-      companyName: normalizeString(draft.purchasingEntity?.company?.name) ?? "",
-      companyLocationId,
-      companyLocationName:
-        normalizeString(draft.purchasingEntity?.companyLocation?.name) ?? "",
-      approvalState: normalizeString(draft.metafieldApprovalState?.value) ?? null,
-      submissionNotifiedAt:
-        normalizeString(draft.metafieldSubmissionNotifiedAt?.value) ?? null,
-      approvalReason: normalizeApprovalReason(
-        draft.metafieldApprovalReason?.value,
-      ),
-      approverEmail,
-      poNumber,
-      budgetStatus: normalizeBudgetStatus(draft.metafieldBudgetStatus?.value),
-      budgetReason: normalizeString(draft.metafieldBudgetReason?.value) ?? null,
-      budgetTriggerScope: normalizeBudgetTriggerScope(
-        draft.metafieldBudgetTriggerScope?.value,
-      ),
-      creditLimit: formatMoneyAmount(draft.metafieldBudgetLimitApplied?.value),
-      remainingCredit: formatMoneyAmount(
-        draft.metafieldBudgetRemainingSnapshot?.value,
-      ),
-      amountExceededBy: formatMoneyAmount(
-        draft.metafieldBudgetAmountExceededBy?.value,
-      ),
-      customerCreditLimit: formatMoneyAmount(
-        draft.metafieldBudgetCustomerLimitApplied?.value,
-      ),
-      customerRemainingCredit: formatMoneyAmount(
-        draft.metafieldBudgetCustomerRemainingSnapshot?.value,
-      ),
-      customerAmountExceededBy: formatMoneyAmount(
-        draft.metafieldBudgetCustomerAmountExceededBy?.value,
-      ),
-      companyCreditLimit: formatMoneyAmount(
-        draft.metafieldBudgetCompanyLimitApplied?.value,
-      ),
-      companyRemainingCredit: formatMoneyAmount(
-        draft.metafieldBudgetCompanyRemainingSnapshot?.value,
-      ),
-      companyAmountExceededBy: formatMoneyAmount(
-        draft.metafieldBudgetCompanyAmountExceededBy?.value,
-      ),
-    };
-  }
-
-  async markSubmissionNotified({
-    shop,
-    draftOrderId,
-    graphql,
-  }: {
-    shop: string;
-    draftOrderId: string;
-    graphql: AdminGraphqlExecutor;
-  }): Promise<{
-    ok: boolean;
-    approvalState?: "notified";
-    submissionNotifiedAt?: string;
-    error?: string;
-  }> {
-    const draftId = toGid("DraftOrder", draftOrderId);
-    const submissionNotifiedAt = new Date().toISOString();
-
-    const metafields = [
-      {
-        ownerId: draftId,
-        namespace: "custom",
-        key: "submission_notified_at",
-        type: "date_time",
-        value: submissionNotifiedAt,
-      },
-      {
-        ownerId: draftId,
-        namespace: "custom",
-        key: "approval_state",
-        type: "single_line_text_field",
-        value: "notified",
-      },
-    ];
-
-    const data = await executeGraphql<MetafieldsSetResponse>({
-      shop,
-      graphql,
-      query: METAFIELDS_SET_MUTATION,
-      variables: { metafields },
-      operationName: "SubmissionNotificationMetafieldsSet",
-      eventBase: "submission-notification.provider.mark-notified",
-    });
-
-    const userErrors = data.metafieldsSet?.userErrors ?? [];
-
-    if (userErrors.length > 0) {
-      const message =
-        userErrors
-          .map((error) => error.message)
-          .filter(Boolean)
-          .join("; ") || "Failed to write submission notification metafields";
-
-      logger.error(
-        {
-          event: "submission-notification.provider.mark-notified.user-errors",
-          shop,
-          draftOrderId: draftId,
-          userErrors,
-        },
-        "Shopify returned metafieldsSet user errors while marking submission notified",
-      );
-
-      return {
-        ok: false,
-        error: message,
-      };
-    }
-
-    logger.info(
-      {
-        event: "submission-notification.provider.mark-notified.success",
-        shop,
-        draftOrderId: draftId,
-        submissionNotifiedAt,
-      },
-      "Marked draft order submission as notified",
-    );
-
-    return {
-      ok: true,
-      approvalState: "notified",
-      submissionNotifiedAt,
-    };
-  }
-
-  async getCompanyLocationApproverEmail({
-    shop,
-    companyLocationId,
-    graphql,
-  }: {
-    shop: string;
-    companyLocationId: string;
-    graphql: AdminGraphqlExecutor;
-  }): Promise<string | null> {
-    const locationId = toGid("CompanyLocation", companyLocationId);
-
-    const data = await executeGraphql<CompanyLocationApproverQueryResponse>({
-      shop,
-      graphql,
-      query: COMPANY_LOCATION_APPROVER_QUERY,
-      variables: { id: locationId },
-      operationName: "CompanyLocationApproverEmail",
-      eventBase: "submission-notification.provider.company-location-approver",
-    });
-
-    return (
-      normalizeEmail(data.companyLocation?.metafieldApproverEmail?.value) ?? null
-    );
-  }
-}
-
-async function executeGraphql<T>({
-  shop,
-  graphql,
-  query,
-  variables,
-  operationName,
-  eventBase,
-}: {
-  shop: string;
-  graphql: AdminGraphqlExecutor;
-  query: string;
-  variables?: Record<string, unknown>;
-  operationName: string;
-  eventBase: string;
-}): Promise<T> {
   let response: Response;
 
   try {
-    response = await graphql(query, { variables });
+    response = await admin.graphql(query, {
+      variables: { id: draftOrderId },
+    });
   } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Unknown Shopify GraphQL error";
+
     logger.error(
       {
-        event: `${eventBase}.request-failed`,
-        shop,
-        operationName,
-        variables,
-        error: serializeUnknownError(error),
+        event: "draft-order-budget-review.query-failed",
+        draftOrderId,
+        error,
+        message,
       },
-      "Shopify GraphQL request failed",
+      "Draft order query failed",
     );
 
-    throw new Error(`${operationName} request failed`);
-  }
-
-  let json: GraphqlEnvelope<T>;
-
-  try {
-    json = (await response.json()) as GraphqlEnvelope<T>;
-  } catch (error) {
-    logger.error(
-      {
-        event: `${eventBase}.invalid-json`,
-        shop,
-        operationName,
-        status: response.status,
-        statusText: response.statusText,
-        error: serializeUnknownError(error),
-      },
-      "Shopify GraphQL response was not valid JSON",
+    throw new DraftOrderBudgetReviewError(
+      "UPSTREAM_UNAVAILABLE",
+      `Failed to query Shopify Draft Order: ${message}`,
     );
-
-    throw new Error(`${operationName} returned invalid JSON`);
   }
 
-  if (!response.ok) {
-    logger.error(
-      {
-        event: `${eventBase}.http-error`,
-        shop,
-        operationName,
-        status: response.status,
-        statusText: response.statusText,
-        body: json,
-      },
-      "Shopify GraphQL returned a non-2xx response",
-    );
-
-    throw new Error(`${operationName} returned HTTP ${response.status}`);
-  }
+  const json = (await response.json()) as DraftOrderGraphqlResponse;
 
   if (json.errors?.length) {
+    throw new DraftOrderBudgetReviewError(
+      "UPSTREAM_UNAVAILABLE",
+      json.errors.map((error) => error.message).filter(Boolean).join("; ") ||
+        "Shopify returned GraphQL errors while loading the draft order",
+    );
+  }
+
+  return json.data?.draftOrder ?? null;
+}
+
+async function writeDraftOrderBudgetMetafields({
+  admin,
+  draftOrderId,
+  decision,
+  notificationStatus,
+  notifiedAt,
+  purchaseOrderNumber,
+}: {
+  admin: AdminGraphqlClient;
+  draftOrderId: string;
+  decision: Awaited<ReturnType<BudgetDecisionService["resolve"]>>;
+  notificationStatus: "not_required" | "sent" | "failed";
+  notifiedAt: string | null;
+  purchaseOrderNumber?: string | null;
+}) {
+  const metafields: Array<{
+    ownerId: string;
+    namespace: string;
+    key: string;
+    type: string;
+    value: string;
+  }> = [
+    {
+      ownerId: draftOrderId,
+      namespace: "custom",
+      key: "budget_status",
+      type: "single_line_text_field",
+      value: decision.status,
+    },
+    {
+      ownerId: draftOrderId,
+      namespace: "custom",
+      key: "budget_reason",
+      type: "single_line_text_field",
+      value: decision.reason,
+    },
+    {
+      ownerId: draftOrderId,
+      namespace: "custom",
+      key: "budget_source",
+      type: "single_line_text_field",
+      value: decision.source,
+    },
+    {
+      ownerId: draftOrderId,
+      namespace: "custom",
+      key: "budget_trigger_scope",
+      type: "single_line_text_field",
+      value: decision.triggerScope,
+    },
+    {
+      ownerId: draftOrderId,
+      namespace: "custom",
+      key: "budget_amount_exceeded_by",
+      type: "number_decimal",
+      value: String(decision.amountExceededBy),
+    },
+    {
+      ownerId: draftOrderId,
+      namespace: "custom",
+      key: "budget_notification_status",
+      type: "single_line_text_field",
+      value: notificationStatus,
+    },
+    {
+      ownerId: draftOrderId,
+      namespace: "custom",
+      key: "budget_fallback_used",
+      type: "boolean",
+      value: String(decision.fallbackUsed),
+    },
+    {
+      ownerId: draftOrderId,
+      namespace: "custom",
+      key: "budget_config_resolution",
+      type: "single_line_text_field",
+      value: decision.configResolution,
+    },
+  ];
+
+  const normalizedPurchaseOrderNumber =
+    normalizeOptionalString(purchaseOrderNumber);
+
+  if (normalizedPurchaseOrderNumber) {
+    metafields.push({
+      ownerId: draftOrderId,
+      namespace: "custom",
+      key: "purchase_order_number",
+      type: "single_line_text_field",
+      value: normalizedPurchaseOrderNumber,
+    });
+  }
+
+  if (decision.limitApplied != null) {
+    metafields.push({
+      ownerId: draftOrderId,
+      namespace: "custom",
+      key: "budget_limit_applied",
+      type: "number_decimal",
+      value: String(decision.limitApplied),
+    });
+  }
+
+  if (decision.remainingSnapshot != null) {
+    metafields.push({
+      ownerId: draftOrderId,
+      namespace: "custom",
+      key: "budget_remaining_snapshot",
+      type: "number_decimal",
+      value: String(decision.remainingSnapshot),
+    });
+  }
+
+  metafields.push({
+    ownerId: draftOrderId,
+    namespace: "custom",
+    key: "budget_customer_limit_applied",
+    type: "number_decimal",
+    value: String(decision.customerLimitApplied ?? 0),
+  });
+
+  metafields.push({
+    ownerId: draftOrderId,
+    namespace: "custom",
+    key: "budget_customer_remaining_snapshot",
+    type: "number_decimal",
+    value: String(decision.customerRemainingSnapshot ?? 0),
+  });
+
+  metafields.push({
+    ownerId: draftOrderId,
+    namespace: "custom",
+    key: "budget_customer_amount_exceeded_by",
+    type: "number_decimal",
+    value: String(decision.customerAmountExceededBy),
+  });
+
+  metafields.push({
+    ownerId: draftOrderId,
+    namespace: "custom",
+    key: "budget_company_limit_applied",
+    type: "number_decimal",
+    value: String(decision.companyLimitApplied ?? 0),
+  });
+
+  metafields.push({
+    ownerId: draftOrderId,
+    namespace: "custom",
+    key: "budget_company_remaining_snapshot",
+    type: "number_decimal",
+    value: String(decision.companyRemainingSnapshot ?? 0),
+  });
+
+  metafields.push({
+    ownerId: draftOrderId,
+    namespace: "custom",
+    key: "budget_company_amount_exceeded_by",
+    type: "number_decimal",
+    value: String(decision.companyAmountExceededBy),
+  });
+
+  if (decision.approverEmail) {
+    metafields.push({
+      ownerId: draftOrderId,
+      namespace: "custom",
+      key: "budget_approver_email_used",
+      type: "single_line_text_field",
+      value: decision.approverEmail,
+    });
+  }
+
+  if (notifiedAt) {
+    metafields.push({
+      ownerId: draftOrderId,
+      namespace: "custom",
+      key: "budget_notified_at",
+      type: "date_time",
+      value: notifiedAt,
+    });
+  }
+
+  const mutation = `#graphql
+    mutation SetDraftOrderBudgetMetafields($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        metafields {
+          namespace
+          key
+          value
+        }
+        userErrors {
+          field
+          message
+          code
+        }
+      }
+    }
+  `;
+
+  let response: Response;
+
+  try {
+    response = await admin.graphql(mutation, {
+      variables: { metafields },
+    });
+  } catch (error) {
     logger.error(
       {
-        event: `${eventBase}.graphql-errors`,
-        shop,
-        operationName,
-        errors: json.errors,
+        event: "draft-order-budget-review.metafields-set-failed",
+        draftOrderId,
+        error,
       },
-      "Shopify GraphQL returned errors",
+      "Failed to write Draft Order budget metafields",
     );
 
-    throw new Error(
+    throw new DraftOrderBudgetReviewError(
+      "UPSTREAM_UNAVAILABLE",
+      "Failed to write Draft Order budget metafields",
+    );
+  }
+
+  const json = (await response.json()) as MetafieldsSetResponse;
+
+  if (json.errors?.length) {
+    throw new DraftOrderBudgetReviewError(
+      "UPSTREAM_UNAVAILABLE",
       json.errors.map((error) => error.message).filter(Boolean).join("; ") ||
-        `${operationName} returned GraphQL errors`,
+        "Shopify returned GraphQL errors while writing draft order metafields",
     );
   }
 
-  return (json.data ?? {}) as T;
+  const userErrors = json.data?.metafieldsSet?.userErrors ?? [];
+
+  if (userErrors.length > 0) {
+    throw new DraftOrderBudgetReviewError(
+      "UPSTREAM_UNAVAILABLE",
+      userErrors
+        .map((error) => error.message)
+        .filter(Boolean)
+        .join("; ") || "Failed to write draft order budget metafields",
+    );
+  }
 }
 
-function toGid(resource: string, id: string) {
-  if (id.startsWith("gid://")) return id;
-  return `gid://shopify/${resource}/${id}`;
-}
+function buildDraftOrderAdminUrl(shopDomain: string, draftOrderGid: string) {
+  const storeHandle = shopDomain.replace(".myshopify.com", "");
+  const numericId = extractNumericId(draftOrderGid);
 
-function formatMoneyAmount(value: unknown) {
-  const amount = parseMoneyAmount(value);
-  return amount.toFixed(2);
-}
-
-function parseMoneyAmount(value: unknown) {
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : 0;
+  if (!storeHandle || !numericId) {
+    return "";
   }
 
+  return `https://admin.shopify.com/store/${storeHandle}/draft_orders/${numericId}`;
+}
+
+function extractNumericId(gid: string) {
+  const parts = gid.split("/");
+  return parts[parts.length - 1] ?? "";
+}
+
+function toNumber(value: string | number | null | undefined) {
+  if (typeof value === "number") return value;
   if (typeof value === "string") {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : 0;
   }
-
-  if (
-    value &&
-    typeof value === "object" &&
-    "amount" in value &&
-    typeof (value as { amount?: unknown }).amount === "string"
-  ) {
-    const parsed = Number((value as { amount: string }).amount);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-
   return 0;
 }
 
-function normalizeString(value: string | null | undefined) {
+function formatDecimal(value: number) {
+  return value.toFixed(2);
+}
+
+function normalizeOptionalString(value: string | null | undefined) {
   if (typeof value !== "string") return null;
+
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
 }
 
-function normalizeEmail(value: string | null | undefined) {
-  const normalized = normalizeString(value);
-  return normalized ? normalized.toLowerCase() : null;
-}
+function extractPurchaseOrderNumberFromText(value: string | null | undefined) {
+  const text = normalizeOptionalString(value);
+  if (!text) return null;
 
-function normalizeApprovalReason(
-  value: string | null | undefined,
-): DraftApprovalReason | null {
-  const normalized = normalizeString(value);
+  const labeledPatterns = [
+    /(?:^|[\n\r|;])\s*purchase\s*order(?:\s*number|\s*#)?\s*[:#-]\s*([^\n\r|;]+)/i,
+    /(?:^|[\n\r|;])\s*po(?:\s*number|\s*#)?\s*[:#-]\s*([^\n\r|;]+)/i,
+  ];
 
-  if (normalized === "standard") return "standard";
-  if (normalized === "credit_limit_exceeded") return "credit_limit_exceeded";
-
-  return null;
-}
-
-function normalizeBudgetStatus(value: string | null | undefined) {
-  const normalized = normalizeString(value);
-
-  if (normalized === "within_limit") return "within_limit";
-  if (normalized === "exceeded") return "exceeded";
-
-  return null;
-}
-
-function normalizeBudgetTriggerScope(
-  value: string | null | undefined,
-): "customer" | "company" | "both" | "none" {
-  const normalized = normalizeString(value);
-
-  if (normalized === "customer") return "customer";
-  if (normalized === "company") return "company";
-  if (normalized === "both") return "both";
-
-  return "none";
-}
-
-function resolvePurchaseOrderNumber(
-  customAttributes?: Array<{ key?: string | null; value?: string | null }> | null,
-) {
-  if (!customAttributes?.length) {
-    return null;
+  for (const pattern of labeledPatterns) {
+    const match = text.match(pattern);
+    const candidate = normalizeOptionalString(match?.[1] ?? null);
+    if (candidate) return candidate;
   }
 
-  const acceptedKeys = new Set([
-    "purchase order number",
-    "purchase order",
-    "po number",
-    "po #",
-    "po#",
-    "po",
-    "ponumber",
-  ]);
-
-  for (const attribute of customAttributes) {
-    const key = normalizePurchaseOrderKey(attribute.key);
-    if (!key || !acceptedKeys.has(key)) continue;
-
-    const value = normalizeString(attribute.value);
-    if (value) return value;
-  }
-
-  return null;
-}
-
-function normalizePurchaseOrderKey(value: string | null | undefined) {
-  const normalized = normalizeString(value);
-  if (!normalized) return null;
-
-  return normalized
-    .toLowerCase()
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ");
-}
-
-function serializeUnknownError(error: unknown) {
-  if (error instanceof Error) {
-    return {
-      name: error.name,
-      message: error.message,
-      stack: error.stack,
-    };
-  }
+  const compact = text.replace(/\s+/g, " ").trim();
 
   if (
-    error &&
-    typeof error === "object" &&
-    "status" in error &&
-    "statusText" in error
+    compact &&
+    compact.length <= 64 &&
+    /^[A-Za-z0-9][A-Za-z0-9\\-_/ ]*$/.test(compact) &&
+    (/\\d/.test(compact) || /\\bpo\\b/i.test(compact))
   ) {
-    const responseLike = error as {
-      status?: unknown;
-      statusText?: unknown;
-      data?: unknown;
-      body?: unknown;
-    };
+    return compact;
+  }
 
+  return null;
+}
+
+function resolvePurchaseOrderNumber({
+  purchaseOrderNumber,
+  draftOrderNote,
+}: {
+  purchaseOrderNumber?: string | null;
+  draftOrderNote?: string | null;
+}): {
+  value: string | null;
+  source: "flow_field" | "flow_note" | "none";
+} {
+  const normalizedField = normalizeOptionalString(purchaseOrderNumber);
+  if (normalizedField) {
     return {
-      type: "response_like",
-      status: responseLike.status,
-      statusText: responseLike.statusText,
-      data: responseLike.data ?? null,
-      body: responseLike.body ?? null,
+      value: normalizedField,
+      source: "flow_field",
+    };
+  }
+
+  const extractedFromNote = extractPurchaseOrderNumberFromText(draftOrderNote);
+  if (extractedFromNote) {
+    return {
+      value: extractedFromNote,
+      source: "flow_note",
     };
   }
 
   return {
-    type: typeof error,
-    value: error,
+    value: null,
+    source: "none",
   };
+}
+
+function buildStandardApprovalEmailSubject({
+  companyName,
+  draftOrderName,
+}: {
+  companyName: string;
+  draftOrderName: string;
+}) {
+  const safeCompanyName = companyName.trim() || "Company";
+  const safeDraftOrderName = draftOrderName.trim() || "Draft order";
+
+  return `Approval required: ${safeCompanyName} draft ${safeDraftOrderName}`;
+}
+
+function buildExceededApprovalEmailSubject({
+  companyName,
+  draftOrderName,
+}: {
+  companyName: string;
+  draftOrderName: string;
+}) {
+  const safeCompanyName = companyName.trim() || "Company";
+  const safeDraftOrderName = draftOrderName.trim() || "Draft order";
+
+  return `Approval required: Credit limit exceeded for ${safeCompanyName} draft ${safeDraftOrderName}`;
+}
+
+function buildStandardApprovalEmailBody({
+  draftOrderName,
+  companyName,
+  companyLocationName,
+  orderTotal,
+  currency,
+  invoiceUrl,
+}: {
+  draftOrderName: string;
+  companyName: string;
+  companyLocationName: string;
+  orderTotal: string;
+  currency: string;
+  invoiceUrl: string;
+}) {
+  return [
+    `A draft order has been submitted for approval.`,
+    ``,
+    `Company: ${companyName || "N/A"}`,
+    `Location: ${companyLocationName || "N/A"}`,
+    `Draft order: ${draftOrderName || "N/A"}`,
+    `Total: ${currency} ${orderTotal}`,
+    invoiceUrl ? `Link to draft order checkout: ${invoiceUrl}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildExceededApprovalEmailBody({
+  draftOrderName,
+  companyName,
+  companyLocationName,
+  orderTotal,
+  currency,
+  invoiceUrl,
+  reason,
+  triggerScope,
+  customerCreditLimit,
+  customerRemainingCredit,
+  customerAmountExceededBy,
+  companyCreditLimit,
+  companyRemainingCredit,
+  companyAmountExceededBy,
+}: {
+  draftOrderName: string;
+  companyName: string;
+  companyLocationName: string;
+  orderTotal: string;
+  currency: string;
+  invoiceUrl: string;
+  reason: string;
+  triggerScope: "customer" | "company" | "both" | "none";
+  customerCreditLimit: string;
+  customerRemainingCredit: string;
+  customerAmountExceededBy: string;
+  companyCreditLimit: string;
+  companyRemainingCredit: string;
+  companyAmountExceededBy: string;
+}) {
+  const triggerLabel =
+    triggerScope === "both"
+      ? "Individual customer and company credit exceeded"
+      : triggerScope === "customer"
+        ? "Individual customer credit exceeded"
+        : triggerScope === "company"
+          ? "Company credit exceeded"
+          : "No budget trigger";
+
+  return [
+    `An order has been created on www.centralcleaningsupplies.com.au which has exceeded your assigned credit limit.`,
+    ``,
+    `Draft order: ${draftOrderName || "N/A"}`,
+    `Company: ${companyName || "N/A"}`,
+    `Location: ${companyLocationName || "N/A"}`,
+    `Order total: ${currency} ${orderTotal}`,
+    `Triggered by: ${triggerLabel}`,
+    `Reason: ${reason || "N/A"}`,
+    `Customer credit limit: ${currency} ${customerCreditLimit}`,
+    `Customer remaining credit: ${currency} ${customerRemainingCredit}`,
+    `Customer amount exceeded by: ${currency} ${customerAmountExceededBy}`,
+    `Company credit limit: ${currency} ${companyCreditLimit}`,
+    `Company remaining credit: ${currency} ${companyRemainingCredit}`,
+    `Company amount exceeded by: ${currency} ${companyAmountExceededBy}`,
+    ``,
+    invoiceUrl ? `Order Approval Link: ${invoiceUrl}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
