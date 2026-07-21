@@ -257,6 +257,17 @@ export async function reviewDraftOrderBudget({
   let notificationStatus: "not_required" | "sent" | "failed" = "not_required";
   let notifiedAt: string | null = null;
 
+  // IMPORTANT:
+  // Write budget metafields BEFORE sending notification so the evaluator/provider
+  // can read the exceeded-budget values and include them in the email body.
+  await writeDraftOrderBudgetMetafields({
+    admin,
+    draftOrderId: draftOrder.id,
+    decision,
+    notificationStatus,
+    notifiedAt,
+  });
+
   if (notify) {
     const markSubmittedResult = await markDraftSubmittedForApproval({
       shop: shopDomain,
@@ -337,6 +348,7 @@ export async function reviewDraftOrderBudget({
     }
   }
 
+  // Write a second time so final notification result/status is persisted.
   await writeDraftOrderBudgetMetafields({
     admin,
     draftOrderId: draftOrder.id,
