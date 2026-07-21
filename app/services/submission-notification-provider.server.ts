@@ -23,6 +23,7 @@ type DraftContextQueryResponse = {
     presentmentCurrencyCode?: string | null;
     invoiceUrl?: string | null;
     createdAt?: string | null;
+    purchaseOrderNumber?: string | null;
     customer?: {
       id?: string | null;
       displayName?: string | null;
@@ -32,6 +33,36 @@ type DraftContextQueryResponse = {
       value?: string | null;
     } | null;
     metafieldSubmissionNotifiedAt?: {
+      value?: string | null;
+    } | null;
+    metafieldApprovalReason?: {
+      value?: string | null;
+    } | null;
+    metafieldBudgetStatus?: {
+      value?: string | null;
+    } | null;
+    metafieldBudgetReason?: {
+      value?: string | null;
+    } | null;
+    metafieldBudgetTriggerScope?: {
+      value?: string | null;
+    } | null;
+    metafieldBudgetCustomerLimitApplied?: {
+      value?: string | null;
+    } | null;
+    metafieldBudgetCustomerRemainingSnapshot?: {
+      value?: string | null;
+    } | null;
+    metafieldBudgetCustomerAmountExceededBy?: {
+      value?: string | null;
+    } | null;
+    metafieldBudgetCompanyLimitApplied?: {
+      value?: string | null;
+    } | null;
+    metafieldBudgetCompanyRemainingSnapshot?: {
+      value?: string | null;
+    } | null;
+    metafieldBudgetCompanyAmountExceededBy?: {
       value?: string | null;
     } | null;
     purchasingEntity?: {
@@ -83,6 +114,7 @@ const DRAFT_SUBMISSION_CONTEXT_QUERY = `#graphql
       presentmentCurrencyCode
       invoiceUrl
       createdAt
+      purchaseOrderNumber
       customer {
         id
         displayName
@@ -92,6 +124,36 @@ const DRAFT_SUBMISSION_CONTEXT_QUERY = `#graphql
         value
       }
       metafieldSubmissionNotifiedAt: metafield(namespace: "custom", key: "submission_notified_at") {
+        value
+      }
+      metafieldApprovalReason: metafield(namespace: "custom", key: "approval_reason") {
+        value
+      }
+      metafieldBudgetStatus: metafield(namespace: "custom", key: "budget_status") {
+        value
+      }
+      metafieldBudgetReason: metafield(namespace: "custom", key: "budget_reason") {
+        value
+      }
+      metafieldBudgetTriggerScope: metafield(namespace: "custom", key: "budget_trigger_scope") {
+        value
+      }
+      metafieldBudgetCustomerLimitApplied: metafield(namespace: "custom", key: "budget_customer_limit_applied") {
+        value
+      }
+      metafieldBudgetCustomerRemainingSnapshot: metafield(namespace: "custom", key: "budget_customer_remaining_snapshot") {
+        value
+      }
+      metafieldBudgetCustomerAmountExceededBy: metafield(namespace: "custom", key: "budget_customer_amount_exceeded_by") {
+        value
+      }
+      metafieldBudgetCompanyLimitApplied: metafield(namespace: "custom", key: "budget_company_limit_applied") {
+        value
+      }
+      metafieldBudgetCompanyRemainingSnapshot: metafield(namespace: "custom", key: "budget_company_remaining_snapshot") {
+        value
+      }
+      metafieldBudgetCompanyAmountExceededBy: metafield(namespace: "custom", key: "budget_company_amount_exceeded_by") {
         value
       }
       purchasingEntity {
@@ -199,13 +261,12 @@ export class ShopifySubmissionNotificationDataProvider
       name: draft.name,
       createdAt: draft.createdAt ?? null,
 
-      // Keep these null unless/until you add proven fields for them.
       status: null,
       isOpen: null,
 
       totalAmount: parseMoneyAmount(draft.totalPrice),
       currencyCode: draft.presentmentCurrencyCode ?? null,
-      poNumber: null,
+      poNumber: normalizeString(draft.purchaseOrderNumber),
 
       customerName: draft.customer?.displayName ?? null,
       customerEmail: draft.customer?.email ?? null,
@@ -219,7 +280,7 @@ export class ShopifySubmissionNotificationDataProvider
         draft.purchasingEntity?.__typename === "PurchasingCompany"
           ? draft.purchasingEntity.companyLocation?.name ?? null
           : null,
-      approverEmail,
+      approverEmail: normalizeEmail(approverEmail),
 
       workflowApprovalState: normalizeString(
         draft.metafieldApprovalState?.value,
@@ -227,8 +288,36 @@ export class ShopifySubmissionNotificationDataProvider
       submissionNotifiedAt: normalizeString(
         draft.metafieldSubmissionNotifiedAt?.value,
       ),
+      approvalReason: normalizeApprovalReason(
+        draft.metafieldApprovalReason?.value,
+      ),
 
-      // Replace later if you have a better app-specific approval URL.
+      budgetStatus: normalizeString(draft.metafieldBudgetStatus?.value),
+      budgetReason: normalizeString(draft.metafieldBudgetReason?.value),
+      budgetTriggerScope: normalizeString(
+        draft.metafieldBudgetTriggerScope?.value,
+      ),
+
+      customerCreditLimit: parseMoneyAmount(
+        draft.metafieldBudgetCustomerLimitApplied?.value,
+      ),
+      customerRemainingCredit: parseMoneyAmount(
+        draft.metafieldBudgetCustomerRemainingSnapshot?.value,
+      ),
+      customerAmountExceededBy: parseMoneyAmount(
+        draft.metafieldBudgetCustomerAmountExceededBy?.value,
+      ),
+
+      companyCreditLimit: parseMoneyAmount(
+        draft.metafieldBudgetCompanyLimitApplied?.value,
+      ),
+      companyRemainingCredit: parseMoneyAmount(
+        draft.metafieldBudgetCompanyRemainingSnapshot?.value,
+      ),
+      companyAmountExceededBy: parseMoneyAmount(
+        draft.metafieldBudgetCompanyAmountExceededBy?.value,
+      ),
+
       approvalLink: normalizeString(draft.invoiceUrl),
     };
   }
@@ -423,4 +512,25 @@ function parseMoneyAmount(value?: string | number | null): number | null {
 function normalizeString(value?: string | null): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
+}
+
+function normalizeEmail(value?: string | null): string | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized || null;
+}
+
+function normalizeApprovalReason(
+  value?: string | null,
+): "standard" | "credit_limit_exceeded" | null {
+  const normalized = value?.trim().toLowerCase();
+
+  if (normalized === "credit_limit_exceeded") {
+    return "credit_limit_exceeded";
+  }
+
+  if (normalized === "standard") {
+    return "standard";
+  }
+
+  return null;
 }

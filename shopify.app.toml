@@ -2,15 +2,28 @@
 
 client_id = "4b3dbef330725996f58b28f704408d93"
 name = "ccs-credit-approval"
-application_url = "https://example.com"
+application_url = "https://ccs-credit-approval-prod.onrender.com"
 embedded = true
 
 [access_scopes]
-# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products,write_metaobjects,write_metaobject_definitions"
+scopes = "write_products,write_metaobjects,write_metaobject_definitions,read_draft_orders,write_draft_orders"
+
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://ccs-credit-approval-prod.onrender.com/api/auth" ]
 
 [webhooks]
 api_version = "2026-10"
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = [ "app/uninstalled" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/scopes_update"
+  topics = [ "app/scopes_update" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/draft-orders"
+  topics = [ "draft_orders/create", "draft_orders/update" ]
+

@@ -1,7 +1,10 @@
 import { BudgetDecisionService } from "./budget-decision.server";
 import { ShopifyBudgetProvider } from "./shopify-budget-provider.server";
 import { logger } from "../lib/logger.server";
-import { markDraftSubmittedForApproval } from "./mark-draft-submitted-for-approval.server";
+import {
+  markDraftSubmittedForApproval,
+  type DraftApprovalReason,
+} from "./mark-draft-submitted-for-approval.server";
 import { processSubmissionNotification } from "./process-submission-notification.server";
 
 type AdminGraphqlClient = {
@@ -16,6 +19,7 @@ export type DraftOrderBudgetReviewResult = {
   notify: boolean;
   emailSent: boolean;
   notificationStatus: "not_required" | "sent" | "failed";
+  approvalReason: DraftApprovalReason;
   budgetStatus: "within_limit" | "exceeded";
   budgetReason: string;
   budgetTriggerScope: "customer" | "company" | "both" | "none";
@@ -174,7 +178,10 @@ export async function reviewDraftOrderBudget({
     orderTotal: orderTotalValue,
   });
 
-  const notify = decision.status === "exceeded";
+  const approvalReason: DraftApprovalReason =
+    decision.status === "exceeded" ? "credit_limit_exceeded" : "standard";
+
+  const notify = true;
   const resolvedApproverEmail = decision.approverEmail ?? "";
 
   const invoiceUrl = draftOrder.invoiceUrl ?? "";
@@ -208,28 +215,43 @@ export async function reviewDraftOrderBudget({
     decision.remainingSnapshot ?? 0,
   );
 
-  const emailSubject = notify
-    ? `B2B draft order ${draftOrder.name} submitted for approval`
-    : "";
+  const emailSubject =
+    approvalReason === "credit_limit_exceeded"
+      ? buildExceededApprovalEmailSubject({
+          companyName,
+          draftOrderName: draftOrder.name,
+        })
+      : buildStandardApprovalEmailSubject({
+          companyName,
+          draftOrderName: draftOrder.name,
+        });
 
-  const emailBody = notify
-    ? buildApprovalEmailBody({
-        draftOrderName: draftOrder.name,
-        companyName,
-        companyLocationName,
-        orderTotal: orderTotalFormatted,
-        currency,
-        invoiceUrl,
-        reason: decision.reason,
-        triggerScope: decision.triggerScope,
-        customerCreditLimit: customerCreditLimitFormatted,
-        customerRemainingCredit: customerRemainingCreditFormatted,
-        customerAmountExceededBy: customerAmountExceededByFormatted,
-        companyCreditLimit: companyCreditLimitFormatted,
-        companyRemainingCredit: companyRemainingCreditFormatted,
-        companyAmountExceededBy: companyAmountExceededByFormatted,
-      })
-    : "";
+  const emailBody =
+    approvalReason === "credit_limit_exceeded"
+      ? buildExceededApprovalEmailBody({
+          draftOrderName: draftOrder.name,
+          companyName,
+          companyLocationName,
+          orderTotal: orderTotalFormatted,
+          currency,
+          invoiceUrl,
+          reason: decision.reason,
+          triggerScope: decision.triggerScope,
+          customerCreditLimit: customerCreditLimitFormatted,
+          customerRemainingCredit: customerRemainingCreditFormatted,
+          customerAmountExceededBy: customerAmountExceededByFormatted,
+          companyCreditLimit: companyCreditLimitFormatted,
+          companyRemainingCredit: companyRemainingCreditFormatted,
+          companyAmountExceededBy: companyAmountExceededByFormatted,
+        })
+      : buildStandardApprovalEmailBody({
+          draftOrderName: draftOrder.name,
+          companyName,
+          companyLocationName,
+          orderTotal: orderTotalFormatted,
+          currency,
+          invoiceUrl,
+        });
 
   let emailSent = false;
   let notificationStatus: "not_required" | "sent" | "failed" = "not_required";
@@ -240,6 +262,7 @@ export async function reviewDraftOrderBudget({
       shop: shopDomain,
       draftOrderId: draftOrder.id,
       graphql: (query, options) => admin.graphql(query, options),
+      approvalReason,
     });
 
     if (!markSubmittedResult.ok) {
@@ -251,6 +274,7 @@ export async function reviewDraftOrderBudget({
           companyLocationId,
           customerId,
           approverEmail: resolvedApproverEmail,
+          approvalReason,
           error: markSubmittedResult.error,
         },
         "Failed to mark draft order as submitted for approval",
@@ -282,6 +306,7 @@ export async function reviewDraftOrderBudget({
             companyLocationId,
             customerId,
             approverEmail: resolvedApproverEmail,
+            approvalReason,
           },
           "Draft order submission notification was already sent",
         );
@@ -298,6 +323,7 @@ export async function reviewDraftOrderBudget({
             companyLocationId,
             customerId,
             approverEmail: resolvedApproverEmail,
+            approvalReason,
             submissionStatus: submissionResult.status,
             submissionReason: submissionResult.reason,
           },
@@ -329,6 +355,7 @@ export async function reviewDraftOrderBudget({
       budgetStatus: decision.status,
       budgetReason: decision.reason,
       budgetTriggerScope: decision.triggerScope,
+      approvalReason,
       notify,
       approverEmail: resolvedApproverEmail,
       emailSent,
@@ -342,6 +369,7 @@ export async function reviewDraftOrderBudget({
     notify,
     emailSent,
     notificationStatus,
+    approvalReason,
     budgetStatus: decision.status,
     budgetReason: decision.reason,
     budgetTriggerScope: decision.triggerScope,
@@ -703,7 +731,61 @@ function formatDecimal(value: number) {
   return value.toFixed(2);
 }
 
-function buildApprovalEmailBody({
+function buildStandardApprovalEmailSubject({
+  companyName,
+  draftOrderName,
+}: {
+  companyName: string;
+  draftOrderName: string;
+}) {
+  const safeCompanyName = companyName.trim() || "Company";
+  const safeDraftOrderName = draftOrderName.trim() || "Draft order";
+
+  return `Approval required: ${safeCompanyName} draft ${safeDraftOrderName}`;
+}
+
+function buildExceededApprovalEmailSubject({
+  companyName,
+  draftOrderName,
+}: {
+  companyName: string;
+  draftOrderName: string;
+}) {
+  const safeCompanyName = companyName.trim() || "Company";
+  const safeDraftOrderName = draftOrderName.trim() || "Draft order";
+
+  return `Approval required: Credit limit exceeded for ${safeCompanyName} draft ${safeDraftOrderName}`;
+}
+
+function buildStandardApprovalEmailBody({
+  draftOrderName,
+  companyName,
+  companyLocationName,
+  orderTotal,
+  currency,
+  invoiceUrl,
+}: {
+  draftOrderName: string;
+  companyName: string;
+  companyLocationName: string;
+  orderTotal: string;
+  currency: string;
+  invoiceUrl: string;
+}) {
+  return [
+    `A draft order has been submitted for approval.`,
+    ``,
+    `Company: ${companyName || "N/A"}`,
+    `Location: ${companyLocationName || "N/A"}`,
+    `Draft order: ${draftOrderName || "N/A"}`,
+    `Total: ${currency} ${orderTotal}`,
+    invoiceUrl ? `Link to draft order checkout: ${invoiceUrl}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildExceededApprovalEmailBody({
   draftOrderName,
   companyName,
   companyLocationName,
@@ -746,12 +828,12 @@ function buildApprovalEmailBody({
   return [
     `An order has been created on www.centralcleaningsupplies.com.au which has exceeded your assigned credit limit.`,
     ``,
-    `Draft order: ${draftOrderName}`,
-    `Company: ${companyName}`,
-    `Location: ${companyLocationName}`,
+    `Draft order: ${draftOrderName || "N/A"}`,
+    `Company: ${companyName || "N/A"}`,
+    `Location: ${companyLocationName || "N/A"}`,
     `Order total: ${currency} ${orderTotal}`,
     `Triggered by: ${triggerLabel}`,
-    `Reason: ${reason}`,
+    `Reason: ${reason || "N/A"}`,
     `Customer credit limit: ${currency} ${customerCreditLimit}`,
     `Customer remaining credit: ${currency} ${customerRemainingCredit}`,
     `Customer amount exceeded by: ${currency} ${customerAmountExceededBy}`,

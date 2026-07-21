@@ -5,10 +5,13 @@ export type AdminGraphqlExecutor = (
   options?: { variables?: Record<string, unknown> },
 ) => Promise<Response>;
 
+export type DraftApprovalReason = "standard" | "credit_limit_exceeded";
+
 export interface MarkDraftSubmittedForApprovalInput {
   shop: string;
   draftOrderId: string;
   graphql: AdminGraphqlExecutor;
+  approvalReason: DraftApprovalReason;
 }
 
 export interface MarkDraftSubmittedForApprovalResult {
@@ -16,6 +19,7 @@ export interface MarkDraftSubmittedForApprovalResult {
   shop: string;
   draftOrderId: string;
   approvalState: "submitted";
+  approvalReason: DraftApprovalReason;
   error?: string;
 }
 
@@ -62,6 +66,7 @@ export async function markDraftSubmittedForApproval({
   shop,
   draftOrderId,
   graphql,
+  approvalReason,
 }: MarkDraftSubmittedForApprovalInput): Promise<MarkDraftSubmittedForApprovalResult> {
   const ownerId = toGid("DraftOrder", draftOrderId);
 
@@ -70,6 +75,8 @@ export async function markDraftSubmittedForApproval({
       event: "submission-notification.mark-submitted.start",
       shop,
       draftOrderId: ownerId,
+      approvalState: "submitted",
+      approvalReason,
     },
     "Marking draft order as submitted for approval",
   );
@@ -81,6 +88,13 @@ export async function markDraftSubmittedForApproval({
       key: "approval_state",
       type: "single_line_text_field",
       value: "submitted",
+    },
+    {
+      ownerId,
+      namespace: "custom",
+      key: "approval_reason",
+      type: "single_line_text_field",
+      value: approvalReason,
     },
   ];
 
@@ -99,6 +113,8 @@ export async function markDraftSubmittedForApproval({
         event: "submission-notification.mark-submitted.request-failed",
         shop,
         draftOrderId: ownerId,
+        approvalState: "submitted",
+        approvalReason,
         error,
         message,
       },
@@ -110,6 +126,7 @@ export async function markDraftSubmittedForApproval({
       shop,
       draftOrderId: ownerId,
       approvalState: "submitted",
+      approvalReason,
       error: message,
     };
   }
@@ -127,6 +144,8 @@ export async function markDraftSubmittedForApproval({
         event: "submission-notification.mark-submitted.invalid-json",
         shop,
         draftOrderId: ownerId,
+        approvalState: "submitted",
+        approvalReason,
         statusCode: response.status,
         error,
         message,
@@ -139,6 +158,7 @@ export async function markDraftSubmittedForApproval({
       shop,
       draftOrderId: ownerId,
       approvalState: "submitted",
+      approvalReason,
       error: message,
     };
   }
@@ -153,6 +173,8 @@ export async function markDraftSubmittedForApproval({
         event: "submission-notification.mark-submitted.http-failed",
         shop,
         draftOrderId: ownerId,
+        approvalState: "submitted",
+        approvalReason,
         statusCode: response.status,
         errors: json.errors ?? null,
       },
@@ -164,6 +186,7 @@ export async function markDraftSubmittedForApproval({
       shop,
       draftOrderId: ownerId,
       approvalState: "submitted",
+      approvalReason,
       error: message,
     };
   }
@@ -176,6 +199,8 @@ export async function markDraftSubmittedForApproval({
         event: "submission-notification.mark-submitted.graphql-errors",
         shop,
         draftOrderId: ownerId,
+        approvalState: "submitted",
+        approvalReason,
         errors: json.errors,
       },
       "Shopify GraphQL returned errors while marking draft as submitted",
@@ -186,6 +211,7 @@ export async function markDraftSubmittedForApproval({
       shop,
       draftOrderId: ownerId,
       approvalState: "submitted",
+      approvalReason,
       error: message,
     };
   }
@@ -200,6 +226,8 @@ export async function markDraftSubmittedForApproval({
         event: "submission-notification.mark-submitted.user-errors",
         shop,
         draftOrderId: ownerId,
+        approvalState: "submitted",
+        approvalReason,
         userErrors,
       },
       "metafieldsSet returned user errors while marking draft as submitted",
@@ -210,6 +238,7 @@ export async function markDraftSubmittedForApproval({
       shop,
       draftOrderId: ownerId,
       approvalState: "submitted",
+      approvalReason,
       error: message,
     };
   }
@@ -220,6 +249,7 @@ export async function markDraftSubmittedForApproval({
       shop,
       draftOrderId: ownerId,
       approvalState: "submitted",
+      approvalReason,
     },
     "Draft order marked as submitted for approval",
   );
@@ -229,6 +259,7 @@ export async function markDraftSubmittedForApproval({
     shop,
     draftOrderId: ownerId,
     approvalState: "submitted",
+    approvalReason,
   };
 }
 

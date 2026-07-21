@@ -1,9 +1,7 @@
-# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
-
-client_id = "760a26cdb268249597ffaaa3ca22d982"
+client_id = "41d14c005fa4d321f1231c005bd1e34f"
+name = "ccs-credit-approval"
 application_url = "https://ccs-credit-approval-prod.onrender.com"
 embedded = true
-name = "ccs-credit-live-test"
 
 [access_scopes]
 scopes = "read_customers,write_metaobject_definitions,write_metaobjects,write_products,read_draft_orders,write_draft_orders"
@@ -20,4 +18,3 @@ api_version = "2026-07"
 
 [build]
 automatically_update_urls_on_dev = false
-

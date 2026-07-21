@@ -31,22 +31,36 @@ export async function processSubmissionNotification({
   const provider = new ShopifySubmissionNotificationDataProvider(graphql);
   const evaluator = new SubmissionNotificationEvaluatorService(provider);
 
-  const result = await evaluator.evaluate({
-    shop,
-    draftOrderId,
-  });
-
-  logger.info(
-    {
-      event: "submission-notification.process.complete",
+  try {
+    const result = await evaluator.evaluate({
       shop,
       draftOrderId,
-      status: result.status,
-      reason: result.reason,
-      approverEmail: result.approverEmail,
-    },
-    "Completed submission notification processing",
-  );
+    });
 
-  return result;
+    logger.info(
+      {
+        event: "submission-notification.process.complete",
+        shop,
+        draftOrderId,
+        status: result.status,
+        reason: result.reason,
+        approverEmail: result.approverEmail,
+      },
+      "Completed submission notification processing",
+    );
+
+    return result;
+  } catch (error) {
+    logger.error(
+      {
+        event: "submission-notification.process.failed",
+        shop,
+        draftOrderId,
+        error,
+      },
+      "Submission notification processing threw an unhandled error",
+    );
+
+    throw error;
+  }
 }
