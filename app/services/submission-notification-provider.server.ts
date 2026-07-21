@@ -23,7 +23,6 @@ type DraftContextQueryResponse = {
     presentmentCurrencyCode?: string | null;
     invoiceUrl?: string | null;
     createdAt?: string | null;
-    purchaseOrderNumber?: string | null;
     customAttributes?: Array<{
       key?: string | null;
       value?: string | null;
@@ -118,7 +117,6 @@ const DRAFT_SUBMISSION_CONTEXT_QUERY = `#graphql
       presentmentCurrencyCode
       invoiceUrl
       createdAt
-      purchaseOrderNumber
       customAttributes {
         key
         value
@@ -263,11 +261,18 @@ export class ShopifySubmissionNotificationDataProvider
       );
     }
 
-    const poNumber =
-  normalizeString(draft.purchaseOrderNumber) ??
-  resolvePurchaseOrderNumber(draft.customAttributes) ??
-  null;
+    const poNumber = resolvePurchaseOrderNumber(draft.customAttributes) ?? null;
 
+    logger.info(
+      {
+        event: "submission-notification.provider.po-resolution",
+        shop,
+        draftOrderId: draftId,
+        customAttributes: draft.customAttributes ?? [],
+        resolvedPoNumber: poNumber,
+      },
+      "Resolved purchase order number for submission notification",
+    );
 
     return {
       id: draft.id,
