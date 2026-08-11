@@ -14,6 +14,11 @@ export type SendApprovalEmailResult = {
   error?: string;
 };
 
+type SendGridContentItem = {
+  type: "text/plain" | "text/html";
+  value: string;
+};
+
 class ApprovalEmailService {
   async send({
     to,
@@ -35,32 +40,60 @@ class ApprovalEmailService {
       };
     }
 
-    if (!to) {
+    const normalizedTo = normalizeEmail(to);
+    const normalizedSubject = normalizeText(subject);
+    const normalizedText = normalizeText(text);
+    const normalizedHtml = normalizeOptionalText(html);
+
+    if (!normalizedTo) {
       return {
         ok: false,
         error: "Recipient email is required",
       };
     }
 
-    const content = [
-      {
-        type: "text/plain",
-        value: text,
-      },
-    ];
+    if (!isValidEmail(normalizedTo)) {
+      return {
+        ok: false,
+        error: "Recipient email is invalid",
+      };
+    }
 
-    if (html) {
+    if (!normalizedSubject) {
+      return {
+        ok: false,
+        error: "Email subject is required",
+      };
+    }
+
+    if (!normalizedText && !normalizedHtml) {
+      return {
+        ok: false,
+        error: "Email body is required",
+      };
+    }
+
+    const content: SendGridContentItem[] = [];
+
+    if (normalizedText) {
+      content.push({
+        type: "text/plain",
+        value: normalizedText,
+      });
+    }
+
+    if (normalizedHtml) {
       content.push({
         type: "text/html",
-        value: html,
+        value: normalizedHtml,
       });
     }
 
     const payload: Record<string, unknown> = {
       personalizations: [
         {
-          to: [{ email: to }],
-          subject,
+          to: [{ email: normalizedTo }],
+          subject: normalizedSubject,
         },
       ],
       from: {
@@ -68,6 +101,12 @@ class ApprovalEmailService {
         name: config.SENDGRID_FROM_NAME || undefined,
       },
       content,
+      tracking_settings: {
+        click_tracking: {
+          enable: false,
+          enable_text: false,
+        },
+      },
     };
 
     if (config.SENDGRID_REPLY_TO_EMAIL) {
@@ -94,10 +133,11 @@ class ApprovalEmailService {
       logger.error(
         {
           event: "approval-email.send.request-failed",
-          to,
-          subject,
+          to: normalizedTo,
+          subject: normalizedSubject,
           message,
           error,
+          clickTrackingDisabled: true,
         },
         "Approval email request to SendGrid failed",
       );
@@ -112,9 +152,10 @@ class ApprovalEmailService {
       logger.info(
         {
           event: "approval-email.send.success",
-          to,
-          subject,
+          to: normalizedTo,
+          subject: normalizedSubject,
           statusCode: response.status,
+          clickTrackingDisabled: true,
         },
         "Approval email sent successfully",
       );
@@ -136,10 +177,11 @@ class ApprovalEmailService {
     logger.error(
       {
         event: "approval-email.send.failed",
-        to,
-        subject,
+        to: normalizedTo,
+        subject: normalizedSubject,
         statusCode: response.status,
         responseText,
+        clickTrackingDisabled: true,
       },
       "Approval email failed",
     );
@@ -150,6 +192,22 @@ class ApprovalEmailService {
       error: responseText || `SendGrid returned HTTP ${response.status}`,
     };
   }
+}
+
+function normalizeText(value: string | null | undefined): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeOptionalText(value: string | null | undefined): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeEmail(value: string | null | undefined): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 export const approvalEmailService = new ApprovalEmailService();
