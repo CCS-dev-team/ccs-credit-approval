@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { BudgetDecisionService } from "./budget-decision.server";
 import { ShopifyBudgetProvider } from "./shopify-budget-provider.server";
 import { logger } from "../lib/logger.server";
@@ -13,6 +14,14 @@ type AdminGraphqlClient = {
     options?: { variables?: Record<string, unknown> },
   ) => Promise<Response>;
 };
+
+const REVIEW_BASE_URL = normalizeOptionalString(
+  process.env.B2B_APPROVAL_REVIEW_BASE_URL,
+);
+const REVIEW_TOKEN_SECRET = normalizeOptionalString(
+  process.env.B2B_APPROVER_TOKEN_SECRET,
+);
+const REVIEW_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 14;
 
 export type DraftOrderBudgetReviewResult = {
   ok: true;
@@ -191,10 +200,15 @@ export async function reviewDraftOrderBudget({
     decision.status === "exceeded" ? "credit_limit_exceeded" : "standard";
 
   const notify = true;
-  const resolvedApproverEmail = decision.approverEmail ?? "";
+  const resolvedApproverEmail =
+    normalizeOptionalString(decision.approverEmail) ?? "";
 
   const invoiceUrl = draftOrder.invoiceUrl ?? "";
-  const reviewUrl = buildDraftOrderAdminUrl(shopDomain, draftOrder.id) || "";
+  const reviewUrl = buildDraftOrderReviewUrl({
+    shopDomain,
+    draftOrderId: draftOrder.id,
+    approverEmail: resolvedApproverEmail,
+  });
 
   const amountExceededBy = formatDecimal(decision.amountExceededBy);
   const orderTotalFormatted = formatDecimal(orderTotalValue);
@@ -224,6 +238,8 @@ export async function reviewDraftOrderBudget({
     decision.remainingSnapshot ?? 0,
   );
 
+  const resolvedDraftOrderName = draftOrderName ?? draftOrder.name;
+
   const emailSubject =
     approvalReason === "credit_limit_exceeded"
       ? buildExceededApprovalEmailSubject({
@@ -243,6 +259,7 @@ export async function reviewDraftOrderBudget({
           companyLocationName,
           orderTotal: orderTotalFormatted,
           currency,
+          reviewUrl,
           invoiceUrl,
           reason: decision.reason,
           triggerScope: decision.triggerScope,
@@ -259,6 +276,7 @@ export async function reviewDraftOrderBudget({
           companyLocationName,
           orderTotal: orderTotalFormatted,
           currency,
+          reviewUrl,
           invoiceUrl,
         });
 
@@ -306,6 +324,18 @@ export async function reviewDraftOrderBudget({
         shop: shopDomain,
         draftOrderId: draftOrder.id,
         graphql: (query, options) => admin.graphql(query, options),
+        notificationContext: {
+          approvalReason,
+          approverEmail: resolvedApproverEmail,
+          reviewUrl,
+          invoiceUrl,
+          emailSubject,
+          emailBody,
+          purchaseOrderNumber: resolvedPurchaseOrder.value,
+          draftOrderName: resolvedDraftOrderName,
+          companyName,
+          companyLocationName,
+        },
       });
 
       if (submissionResult.status === "sent") {
@@ -344,6 +374,7 @@ export async function reviewDraftOrderBudget({
             approvalReason,
             submissionStatus: submissionResult.status,
             submissionReason: submissionResult.reason,
+            hasReviewUrl: Boolean(reviewUrl),
           },
           "Submission notification processing failed after draft was marked submitted",
         );
@@ -381,6 +412,7 @@ export async function reviewDraftOrderBudget({
       notificationStatus,
       hasPurchaseOrderNumber: Boolean(resolvedPurchaseOrder.value),
       purchaseOrderSource: resolvedPurchaseOrder.source,
+      hasReviewUrl: Boolean(reviewUrl),
     },
     "Draft order budget review completed",
   );
@@ -399,7 +431,7 @@ export async function reviewDraftOrderBudget({
     companyName,
     companyLocationName,
     draftOrderId: draftOrder.id,
-    draftOrderName: draftOrderName ?? draftOrder.name,
+    draftOrderName: resolvedDraftOrderName,
     orderTotal: orderTotalFormatted,
     currency,
     creditLimit: creditLimitFormatted,
@@ -738,20 +770,55 @@ async function writeDraftOrderBudgetMetafields({
   }
 }
 
-function buildDraftOrderAdminUrl(shopDomain: string, draftOrderGid: string) {
-  const storeHandle = shopDomain.replace(".myshopify.com", "");
-  const numericId = extractNumericId(draftOrderGid);
-
-  if (!storeHandle || !numericId) {
+function buildDraftOrderReviewUrl({
+  shopDomain,
+  draftOrderId,
+  approverEmail,
+}: {
+  shopDomain: string;
+  draftOrderId: string;
+  approverEmail: string;
+}) {
+  if (!REVIEW_BASE_URL || !REVIEW_TOKEN_SECRET || !approverEmail) {
+    logger.warn(
+      {
+        event: "draft-order-budget-review.review-url-missing-config",
+        hasReviewBaseUrl: Boolean(REVIEW_BASE_URL),
+        hasReviewTokenSecret: Boolean(REVIEW_TOKEN_SECRET),
+        hasApproverEmail: Boolean(approverEmail),
+        shopDomain,
+        draftOrderId,
+      },
+      "Unable to build storefront review URL for draft order approval",
+    );
     return "";
   }
 
-  return `https://admin.shopify.com/store/${storeHandle}/draft_orders/${numericId}`;
+  const expiresAt = Math.floor(Date.now() / 1000) + REVIEW_TOKEN_TTL_SECONDS;
+  const payload = {
+    shop: shopDomain,
+    draftOrderId,
+    approverEmail,
+    exp: expiresAt,
+  };
+
+  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+  const signature = signTokenPayload(encodedPayload, REVIEW_TOKEN_SECRET);
+
+  const url = new URL(REVIEW_BASE_URL);
+  url.searchParams.set("shop", shopDomain);
+  url.searchParams.set("draftOrderId", draftOrderId);
+  url.searchParams.set("token", `${encodedPayload}.${signature}`);
+
+  return url.toString();
 }
 
-function extractNumericId(gid: string) {
-  const parts = gid.split("/");
-  return parts[parts.length - 1] ?? "";
+function signTokenPayload(payload: string, secret: string) {
+  return createHmac("sha256", secret).update(payload).digest("base64url");
+}
+
+function base64UrlEncode(value: string) {
+  return Buffer.from(value, "utf8").toString("base64url");
 }
 
 function toNumber(value: string | number | null | undefined) {
@@ -794,8 +861,8 @@ function extractPurchaseOrderNumberFromText(value: string | null | undefined) {
   if (
     compact &&
     compact.length <= 64 &&
-    /^[A-Za-z0-9][A-Za-z0-9\\-_/ ]*$/.test(compact) &&
-    (/\\d/.test(compact) || /\\bpo\\b/i.test(compact))
+    /^[A-Za-z0-9][A-Za-z0-9\-_\/ ]*$/.test(compact) &&
+    (/\d/.test(compact) || /\bpo\b/i.test(compact))
   ) {
     return compact;
   }
@@ -867,6 +934,7 @@ function buildStandardApprovalEmailBody({
   companyLocationName,
   orderTotal,
   currency,
+  reviewUrl,
   invoiceUrl,
 }: {
   draftOrderName: string;
@@ -874,6 +942,7 @@ function buildStandardApprovalEmailBody({
   companyLocationName: string;
   orderTotal: string;
   currency: string;
+  reviewUrl: string;
   invoiceUrl: string;
 }) {
   return [
@@ -883,7 +952,8 @@ function buildStandardApprovalEmailBody({
     `Location: ${companyLocationName || "N/A"}`,
     `Draft order: ${draftOrderName || "N/A"}`,
     `Total: ${currency} ${orderTotal}`,
-    invoiceUrl ? `Link to draft order checkout: ${invoiceUrl}` : "",
+    reviewUrl ? `Review / edit / approve order: ${reviewUrl}` : "",
+    invoiceUrl ? `Draft invoice: ${invoiceUrl}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -895,6 +965,7 @@ function buildExceededApprovalEmailBody({
   companyLocationName,
   orderTotal,
   currency,
+  reviewUrl,
   invoiceUrl,
   reason,
   triggerScope,
@@ -910,6 +981,7 @@ function buildExceededApprovalEmailBody({
   companyLocationName: string;
   orderTotal: string;
   currency: string;
+  reviewUrl: string;
   invoiceUrl: string;
   reason: string;
   triggerScope: "customer" | "company" | "both" | "none";
@@ -945,7 +1017,8 @@ function buildExceededApprovalEmailBody({
     `Company remaining credit: ${currency} ${companyRemainingCredit}`,
     `Company amount exceeded by: ${currency} ${companyAmountExceededBy}`,
     ``,
-    invoiceUrl ? `Order Approval Link: ${invoiceUrl}` : "",
+    reviewUrl ? `Review / edit / approve order: ${reviewUrl}` : "",
+    invoiceUrl ? `Draft invoice: ${invoiceUrl}` : "",
   ]
     .filter(Boolean)
     .join("\n");

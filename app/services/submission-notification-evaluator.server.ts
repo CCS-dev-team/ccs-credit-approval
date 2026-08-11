@@ -14,9 +14,23 @@ export type SubmissionNotificationReason =
   | "email_failed"
   | "mark_notified_failed";
 
+export interface SubmissionNotificationContext {
+  approvalReason?: string | null;
+  approverEmail?: string | null;
+  reviewUrl?: string | null;
+  invoiceUrl?: string | null;
+  emailSubject?: string | null;
+  emailBody?: string | null;
+  purchaseOrderNumber?: string | null;
+  draftOrderName?: string | null;
+  companyName?: string | null;
+  companyLocationName?: string | null;
+}
+
 export interface EvaluateSubmissionNotificationInput {
   shop: string;
   draftOrderId: string;
+  notificationContext?: SubmissionNotificationContext;
 }
 
 export interface DraftSubmissionContext {
@@ -56,6 +70,8 @@ export interface DraftSubmissionContext {
   companyAmountExceededBy?: number | null;
 
   approvalLink?: string | null;
+  reviewUrl?: string | null;
+  invoiceUrl?: string | null;
 }
 
 export interface MarkSubmissionNotifiedInput {
@@ -95,6 +111,11 @@ export class SubmissionNotificationEvaluatorService {
         event: "submission-notification.evaluate.start",
         shop: input.shop,
         draftOrderId: input.draftOrderId,
+        hasNotificationContext: Boolean(input.notificationContext),
+        hasReviewUrl: Boolean(normalizeOptionalString(input.notificationContext?.reviewUrl)),
+        hasInvoiceUrl: Boolean(normalizeOptionalString(input.notificationContext?.invoiceUrl)),
+        hasCustomSubject: Boolean(normalizeOptionalString(input.notificationContext?.emailSubject)),
+        hasCustomBody: Boolean(normalizeOptionalString(input.notificationContext?.emailBody)),
       },
       "Starting submission notification evaluation",
     );
@@ -124,16 +145,21 @@ export class SubmissionNotificationEvaluatorService {
       };
     }
 
-    const approvalState = normalizeState(draft.workflowApprovalState);
+    const mergedDraft = mergeDraftWithNotificationContext(
+      draft,
+      input.notificationContext,
+    );
+
+    const approvalState = normalizeState(mergedDraft.workflowApprovalState);
 
     if (approvalState !== "submitted") {
       logger.info(
         {
           event: "submission-notification.evaluate.skipped",
-          shop: draft.shop,
-          draftOrderId: draft.id,
+          shop: mergedDraft.shop,
+          draftOrderId: mergedDraft.id,
           reason: "not_submitted",
-          workflowApprovalState: draft.workflowApprovalState ?? null,
+          workflowApprovalState: mergedDraft.workflowApprovalState ?? null,
         },
         "Submission notification skipped: draft is not submitted",
       );
@@ -141,20 +167,20 @@ export class SubmissionNotificationEvaluatorService {
       return {
         status: "skipped",
         reason: "not_submitted",
-        shop: draft.shop,
-        draftOrderId: draft.id,
-        approverEmail: normalizeEmail(draft.approverEmail),
+        shop: mergedDraft.shop,
+        draftOrderId: mergedDraft.id,
+        approverEmail: normalizeEmail(mergedDraft.approverEmail),
       };
     }
 
-    if (draft.submissionNotifiedAt) {
+    if (mergedDraft.submissionNotifiedAt) {
       logger.info(
         {
           event: "submission-notification.evaluate.skipped",
-          shop: draft.shop,
-          draftOrderId: draft.id,
+          shop: mergedDraft.shop,
+          draftOrderId: mergedDraft.id,
           reason: "already_notified",
-          submissionNotifiedAt: draft.submissionNotifiedAt,
+          submissionNotifiedAt: mergedDraft.submissionNotifiedAt,
         },
         "Submission notification skipped: already notified",
       );
@@ -162,18 +188,18 @@ export class SubmissionNotificationEvaluatorService {
       return {
         status: "skipped",
         reason: "already_notified",
-        shop: draft.shop,
-        draftOrderId: draft.id,
-        approverEmail: normalizeEmail(draft.approverEmail),
+        shop: mergedDraft.shop,
+        draftOrderId: mergedDraft.id,
+        approverEmail: normalizeEmail(mergedDraft.approverEmail),
       };
     }
 
-    if (!draft.companyLocationId) {
+    if (!mergedDraft.companyLocationId) {
       logger.info(
         {
           event: "submission-notification.evaluate.skipped",
-          shop: draft.shop,
-          draftOrderId: draft.id,
+          shop: mergedDraft.shop,
+          draftOrderId: mergedDraft.id,
           reason: "no_company_location",
         },
         "Submission notification skipped: no company location",
@@ -182,22 +208,22 @@ export class SubmissionNotificationEvaluatorService {
       return {
         status: "skipped",
         reason: "no_company_location",
-        shop: draft.shop,
-        draftOrderId: draft.id,
+        shop: mergedDraft.shop,
+        draftOrderId: mergedDraft.id,
         approverEmail: null,
       };
     }
 
-    const approverEmail = normalizeEmail(draft.approverEmail);
+    const approverEmail = normalizeEmail(mergedDraft.approverEmail);
 
     if (!approverEmail) {
       logger.info(
         {
           event: "submission-notification.evaluate.skipped",
-          shop: draft.shop,
-          draftOrderId: draft.id,
+          shop: mergedDraft.shop,
+          draftOrderId: mergedDraft.id,
           reason: "no_approver_email",
-          companyLocationId: draft.companyLocationId,
+          companyLocationId: mergedDraft.companyLocationId,
         },
         "Submission notification skipped: no approver email",
       );
@@ -205,21 +231,21 @@ export class SubmissionNotificationEvaluatorService {
       return {
         status: "skipped",
         reason: "no_approver_email",
-        shop: draft.shop,
-        draftOrderId: draft.id,
+        shop: mergedDraft.shop,
+        draftOrderId: mergedDraft.id,
         approverEmail: null,
       };
     }
 
-    if (!isRelevantDraft(draft)) {
+    if (!isRelevantDraft(mergedDraft)) {
       logger.info(
         {
           event: "submission-notification.evaluate.skipped",
-          shop: draft.shop,
-          draftOrderId: draft.id,
+          shop: mergedDraft.shop,
+          draftOrderId: mergedDraft.id,
           reason: "not_relevant",
-          status: draft.status ?? null,
-          isOpen: draft.isOpen ?? null,
+          status: mergedDraft.status ?? null,
+          isOpen: mergedDraft.isOpen ?? null,
         },
         "Submission notification skipped: draft is not relevant",
       );
@@ -227,28 +253,30 @@ export class SubmissionNotificationEvaluatorService {
       return {
         status: "skipped",
         reason: "not_relevant",
-        shop: draft.shop,
-        draftOrderId: draft.id,
+        shop: mergedDraft.shop,
+        draftOrderId: mergedDraft.id,
         approverEmail,
       };
     }
 
-    const approvalReason = resolveApprovalReason(draft);
+    const approvalReason = resolveApprovalReason(mergedDraft);
 
     const subject =
-      approvalReason === "credit_limit_exceeded"
-        ? buildExceededApprovalSubject(draft)
-        : buildStandardApprovalSubject(draft);
+      normalizeOptionalString(input.notificationContext?.emailSubject) ||
+      (approvalReason === "credit_limit_exceeded"
+        ? buildExceededApprovalSubject(mergedDraft)
+        : buildStandardApprovalSubject(mergedDraft));
 
     const text =
-      approvalReason === "credit_limit_exceeded"
-        ? buildExceededApprovalTextBody(draft)
-        : buildStandardApprovalTextBody(draft);
+      normalizeOptionalString(input.notificationContext?.emailBody) ||
+      (approvalReason === "credit_limit_exceeded"
+        ? buildExceededApprovalTextBody(mergedDraft)
+        : buildStandardApprovalTextBody(mergedDraft));
 
     const html =
       approvalReason === "credit_limit_exceeded"
-        ? buildExceededApprovalHtmlBody(draft)
-        : buildStandardApprovalHtmlBody(draft);
+        ? buildExceededApprovalHtmlBody(mergedDraft)
+        : buildStandardApprovalHtmlBody(mergedDraft);
 
     const sendResult = await approvalEmailService.send({
       to: approverEmail,
@@ -261,13 +289,14 @@ export class SubmissionNotificationEvaluatorService {
       logger.error(
         {
           event: "submission-notification.email.failed",
-          shop: draft.shop,
-          draftOrderId: draft.id,
+          shop: mergedDraft.shop,
+          draftOrderId: mergedDraft.id,
           approverEmail,
           approvalReason,
-          budgetStatus: draft.budgetStatus ?? null,
+          budgetStatus: mergedDraft.budgetStatus ?? null,
           statusCode: sendResult.statusCode,
           error: sendResult.error,
+          hasReviewUrl: Boolean(resolveReviewUrl(mergedDraft)),
         },
         "Submission notification email failed",
       );
@@ -275,8 +304,8 @@ export class SubmissionNotificationEvaluatorService {
       return {
         status: "failed",
         reason: "email_failed",
-        shop: draft.shop,
-        draftOrderId: draft.id,
+        shop: mergedDraft.shop,
+        draftOrderId: mergedDraft.id,
         approverEmail,
       };
     }
@@ -285,8 +314,8 @@ export class SubmissionNotificationEvaluatorService {
 
     try {
       await this.provider.markSubmissionNotified({
-        shop: draft.shop,
-        draftOrderId: draft.id,
+        shop: mergedDraft.shop,
+        draftOrderId: mergedDraft.id,
         notifiedAt,
         approvalState: "notified",
       });
@@ -294,11 +323,11 @@ export class SubmissionNotificationEvaluatorService {
       logger.error(
         {
           event: "submission-notification.mark-notified.failed",
-          shop: draft.shop,
-          draftOrderId: draft.id,
+          shop: mergedDraft.shop,
+          draftOrderId: mergedDraft.id,
           approverEmail,
           approvalReason,
-          budgetStatus: draft.budgetStatus ?? null,
+          budgetStatus: mergedDraft.budgetStatus ?? null,
           notifiedAt,
           error,
         },
@@ -308,8 +337,8 @@ export class SubmissionNotificationEvaluatorService {
       return {
         status: "failed",
         reason: "mark_notified_failed",
-        shop: draft.shop,
-        draftOrderId: draft.id,
+        shop: mergedDraft.shop,
+        draftOrderId: mergedDraft.id,
         approverEmail,
       };
     }
@@ -317,14 +346,15 @@ export class SubmissionNotificationEvaluatorService {
     logger.info(
       {
         event: "submission-notification.email.sent",
-        shop: draft.shop,
-        draftOrderId: draft.id,
+        shop: mergedDraft.shop,
+        draftOrderId: mergedDraft.id,
         approverEmail,
-        companyLocationId: draft.companyLocationId,
+        companyLocationId: mergedDraft.companyLocationId,
         approvalReason,
-        budgetStatus: draft.budgetStatus ?? null,
+        budgetStatus: mergedDraft.budgetStatus ?? null,
         notifiedAt,
         statusCode: sendResult.statusCode,
+        hasReviewUrl: Boolean(resolveReviewUrl(mergedDraft)),
       },
       "Submission notification email sent successfully",
     );
@@ -332,11 +362,36 @@ export class SubmissionNotificationEvaluatorService {
     return {
       status: "sent",
       reason: "sent",
-      shop: draft.shop,
-      draftOrderId: draft.id,
+      shop: mergedDraft.shop,
+      draftOrderId: mergedDraft.id,
       approverEmail,
     };
   }
+}
+
+function mergeDraftWithNotificationContext(
+  draft: DraftSubmissionContext,
+  context?: SubmissionNotificationContext,
+): DraftSubmissionContext {
+  const reviewUrl = normalizeOptionalString(context?.reviewUrl);
+  const invoiceUrl = normalizeOptionalString(context?.invoiceUrl);
+  const approvalLink = reviewUrl || normalizeOptionalString(draft.approvalLink);
+
+  return {
+    ...draft,
+    name: normalizeOptionalString(context?.draftOrderName) || draft.name,
+    poNumber: normalizeOptionalString(context?.purchaseOrderNumber) || draft.poNumber,
+    companyName: normalizeOptionalString(context?.companyName) || draft.companyName,
+    companyLocationName:
+      normalizeOptionalString(context?.companyLocationName) || draft.companyLocationName,
+    approverEmail:
+      normalizeOptionalString(context?.approverEmail) || draft.approverEmail,
+    approvalReason:
+      normalizeApprovalReason(context?.approvalReason) || draft.approvalReason,
+    reviewUrl,
+    invoiceUrl,
+    approvalLink,
+  };
 }
 
 function normalizeEmail(value?: string | null): string | null {
@@ -363,6 +418,11 @@ function normalizeApprovalReason(
   }
 
   return null;
+}
+
+function normalizeOptionalString(value?: string | null): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
 }
 
 function resolveApprovalReason(
@@ -407,6 +467,15 @@ function isRelevantDraft(draft: DraftSubmissionContext): boolean {
   return true;
 }
 
+function resolveReviewUrl(draft: DraftSubmissionContext): string | null {
+  return normalizeOptionalString(draft.reviewUrl) ||
+    normalizeOptionalString(draft.approvalLink);
+}
+
+function resolveInvoiceUrl(draft: DraftSubmissionContext): string | null {
+  return normalizeOptionalString(draft.invoiceUrl);
+}
+
 function buildStandardApprovalSubject(draft: DraftSubmissionContext): string {
   const companyName = draft.companyName?.trim() || "Company";
   const draftName = draft.name?.trim() || draft.id;
@@ -422,8 +491,12 @@ function buildExceededApprovalSubject(draft: DraftSubmissionContext): string {
 }
 
 function buildStandardApprovalTextBody(draft: DraftSubmissionContext): string {
+  const reviewUrl = resolveReviewUrl(draft);
+  const invoiceUrl = resolveInvoiceUrl(draft);
+
   const lines: string[] = [
     "A draft order has been submitted for approval.",
+    "You can review, edit, and approve the order before it is created.",
     "",
     `Company: ${draft.companyName || "N/A"}`,
     `Location: ${draft.companyLocationName || "N/A"}`,
@@ -435,16 +508,24 @@ function buildStandardApprovalTextBody(draft: DraftSubmissionContext): string {
     `Total: ${formatMoney(draft.totalAmount, draft.currencyCode)}`,
   ];
 
-  if (draft.approvalLink) {
-    lines.push("", `Link to draft order checkout: ${draft.approvalLink}`);
+  if (reviewUrl) {
+    lines.push("", `Review / edit / approve order: ${reviewUrl}`);
+  }
+
+  if (invoiceUrl) {
+    lines.push(`Draft invoice: ${invoiceUrl}`);
   }
 
   return lines.join("\n");
 }
 
 function buildExceededApprovalTextBody(draft: DraftSubmissionContext): string {
+  const reviewUrl = resolveReviewUrl(draft);
+  const invoiceUrl = resolveInvoiceUrl(draft);
+
   const lines: string[] = [
     "An order has been created on www.centralcleaningsupplies.com.au which has exceeded your assigned credit limit.",
+    "You can review, edit, and approve the order before it is created.",
     "",
     `Draft order: ${draft.name || draft.id}`,
     `Company: ${draft.companyName || "N/A"}`,
@@ -482,14 +563,21 @@ function buildExceededApprovalTextBody(draft: DraftSubmissionContext): string {
     )}`,
   ];
 
-  if (draft.approvalLink) {
-    lines.push("", `Order Approval Link: ${draft.approvalLink}`);
+  if (reviewUrl) {
+    lines.push("", `Review / edit / approve order: ${reviewUrl}`);
+  }
+
+  if (invoiceUrl) {
+    lines.push(`Draft invoice: ${invoiceUrl}`);
   }
 
   return lines.join("\n");
 }
 
 function buildStandardApprovalHtmlBody(draft: DraftSubmissionContext): string {
+  const reviewUrl = resolveReviewUrl(draft);
+  const invoiceUrl = resolveInvoiceUrl(draft);
+
   const rows: Array<[string, string]> = [
     ["Company", draft.companyName || "N/A"],
     ["Location", draft.companyLocationName || "N/A"],
@@ -512,34 +600,54 @@ function buildStandardApprovalHtmlBody(draft: DraftSubmissionContext): string {
     )
     .join("");
 
-  const cta = draft.approvalLink
+  const primaryCta = reviewUrl
     ? `
-      <p style="margin:24px 0;">
+      <p style="margin:24px 0 12px;">
         <a
-          href="${escapeHtml(draft.approvalLink)}"
+          href="${escapeHtml(reviewUrl)}"
           style="display:inline-block;padding:12px 18px;background:#111827;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;"
         >
-          Open draft order checkout
+          Review / edit / approve order
         </a>
       </p>
-      <p style="font-size:12px;color:#6b7280;">If the button does not work, copy and paste this URL into your browser:<br />${escapeHtml(draft.approvalLink)}</p>
+      <p style="font-size:12px;color:#6b7280;margin:0 0 16px;">
+        If the button does not work, copy and paste this URL into your browser:<br />${escapeHtml(reviewUrl)}
+      </p>
+    `
+    : "";
+
+  const secondaryCta = invoiceUrl
+    ? `
+      <p style="margin:0 0 12px;">
+        <a
+          href="${escapeHtml(invoiceUrl)}"
+          style="color:#111827;text-decoration:underline;font-weight:600;"
+        >
+          Open draft invoice
+        </a>
+      </p>
     `
     : "";
 
   return `
     <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5;color:#111827;">
       <p>A draft order has been submitted for approval.</p>
+      <p>You can review, edit, and approve the order before it is created.</p>
 
       <table style="border-collapse:collapse;width:100%;max-width:720px;">
         ${tableRows}
       </table>
 
-      ${cta}
+      ${primaryCta}
+      ${secondaryCta}
     </div>
   `.trim();
 }
 
 function buildExceededApprovalHtmlBody(draft: DraftSubmissionContext): string {
+  const reviewUrl = resolveReviewUrl(draft);
+  const invoiceUrl = resolveInvoiceUrl(draft);
+
   const rows: Array<[string, string]> = [
     ["Draft order", draft.name || draft.id],
     ["Company", draft.companyName || "N/A"],
@@ -588,17 +696,32 @@ function buildExceededApprovalHtmlBody(draft: DraftSubmissionContext): string {
     )
     .join("");
 
-  const cta = draft.approvalLink
+  const primaryCta = reviewUrl
     ? `
-      <p style="margin:24px 0;">
+      <p style="margin:24px 0 12px;">
         <a
-          href="${escapeHtml(draft.approvalLink)}"
+          href="${escapeHtml(reviewUrl)}"
           style="display:inline-block;padding:12px 18px;background:#b91c1c;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;"
         >
-          Order Approval Link
+          Review / edit / approve order
         </a>
       </p>
-      <p style="font-size:12px;color:#6b7280;">If the button does not work, copy and paste this URL into your browser:<br />${escapeHtml(draft.approvalLink)}</p>
+      <p style="font-size:12px;color:#6b7280;margin:0 0 16px;">
+        If the button does not work, copy and paste this URL into your browser:<br />${escapeHtml(reviewUrl)}
+      </p>
+    `
+    : "";
+
+  const secondaryCta = invoiceUrl
+    ? `
+      <p style="margin:0 0 12px;">
+        <a
+          href="${escapeHtml(invoiceUrl)}"
+          style="color:#111827;text-decoration:underline;font-weight:600;"
+        >
+          Open draft invoice
+        </a>
+      </p>
     `
     : "";
 
@@ -607,12 +730,14 @@ function buildExceededApprovalHtmlBody(draft: DraftSubmissionContext): string {
       <p style="font-weight:700;color:#b91c1c;">
         An order has been created on www.centralcleaningsupplies.com.au which has exceeded your assigned credit limit.
       </p>
+      <p>You can review, edit, and approve the order before it is created.</p>
 
       <table style="border-collapse:collapse;width:100%;max-width:720px;">
         ${tableRows}
       </table>
 
-      ${cta}
+      ${primaryCta}
+      ${secondaryCta}
     </div>
   `.trim();
 }
@@ -664,7 +789,7 @@ function humanizeValue(value?: string | null): string {
   }
 
   return value
-    .replaceAll(/[_-]+/g, " ")
+    .replace(/[_-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .replace(/\b\w/g, (char) => char.toUpperCase());
