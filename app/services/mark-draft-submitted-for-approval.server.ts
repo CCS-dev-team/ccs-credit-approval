@@ -62,7 +62,6 @@ type DraftOrderUpdateMutationResponse = {
     userErrors?: Array<{
       field?: string[] | null;
       message: string;
-      code?: string | null;
     }> | null;
   } | null;
 };
@@ -78,7 +77,6 @@ type MetafieldsSetMutationResponse = {
     userErrors?: Array<{
       field?: string[] | null;
       message: string;
-      code?: string | null;
     }> | null;
   };
 };
@@ -120,7 +118,6 @@ const UPDATE_DRAFT_SUBMISSION_STATE_MUTATION = `#graphql
       userErrors {
         field
         message
-        code
       }
     }
   }
@@ -138,7 +135,6 @@ const MARK_DRAFT_SUBMITTED_METAFIELDS_MUTATION = `#graphql
       userErrors {
         field
         message
-        code
       }
     }
   }
