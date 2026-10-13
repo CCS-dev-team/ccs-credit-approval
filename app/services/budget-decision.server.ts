@@ -102,26 +102,28 @@ export class BudgetDecisionService {
       companyCredit.creditLimit !== null &&
       companyCredit.remainingCredit !== null;
 
-    if (!hasUserBudget && !hasCompanyBudget) {
-      return {
-        status: "invalid_config",
-        source: "none",
-        reason: "invalid_config",
-        triggerScope: "none",
-        approverEmail: null,
-        fallbackUsed: false,
-        limitApplied: null,
-        remainingSnapshot: null,
-        amountExceededBy: 0,
-        customerLimitApplied: null,
-        customerRemainingSnapshot: null,
-        customerAmountExceededBy: 0,
-        companyLimitApplied: null,
-        companyRemainingSnapshot: null,
-        companyAmountExceededBy: 0,
-        configResolution: "not_applicable",
-      };
-    }
+if (!hasUserBudget && !hasCompanyBudget) {
+  const resolvedApprover = approverEmail || config.FALLBACK_APPROVER_EMAIL;
+
+  return {
+    status: "invalid_config",
+    source: "none",
+    reason: "invalid_config",
+    triggerScope: "none",
+    approverEmail: resolvedApprover ?? null,
+    fallbackUsed: false,
+    limitApplied: null,
+    remainingSnapshot: null,
+    amountExceededBy: 0,
+    customerLimitApplied: null,
+    customerRemainingSnapshot: null,
+    customerAmountExceededBy: 0,
+    companyLimitApplied: null,
+    companyRemainingSnapshot: null,
+    companyAmountExceededBy: 0,
+    configResolution: "not_applicable",
+  };
+}
 
     const customerAmountExceededBy = hasUserBudget
       ? Math.max(0, input.orderTotal - (customerCredit?.remainingCredit ?? 0))
