@@ -98,43 +98,49 @@ export class ShopifyBudgetProvider implements BudgetDataProvider {
   }
 
   async getCompanyLocationApprover(
-    companyLocationId: string,
-    companyId?: string | null,
-  ): Promise<string | null> {
-    if (!companyId) {
-      return null;
-    }
+  companyLocationId: string,
+  companyId?: string | null,
+): Promise<string | null> {
+  void companyId;
 
-    const query = `#graphql
-      query GetCompanyLocationApproverFromCompany($companyId: ID!) {
-        company(id: $companyId) {
-          id
-          locations(first: 50) {
-            nodes {
-              id
-              name
-              approverEmail: metafield(namespace: "custom", key: "workflow_approver_email") {
-                value
-                type
-              }
-            }
-          }
+  const query = `#graphql
+    query GetCompanyLocationApprover($id: ID!) {
+      companyLocation(id: $id) {
+        id
+        name
+        approverEmailWorkflow: metafield(namespace: "workflow", key: "approver_email") {
+          value
+          type
+        }
+        approverEmailCustom: metafield(namespace: "custom", key: "workflow_approver_email") {
+          value
+          type
         }
       }
-    `;
+    }
+  `;
 
-    const response = await this.admin.graphql(query, {
-      variables: { companyId },
-    });
+  const response = await this.admin.graphql(query, {
+    variables: { id: companyLocationId },
+  });
 
-    const json = await response.json();
-    const locations = json?.data?.company?.locations?.nodes ?? [];
+  const json = await response.json();
+  const location = json?.data?.companyLocation;
 
-    const matchingLocation = locations.find(
-      (location: { id: string; approverEmail?: { value?: string } | null }) =>
-        location.id === companyLocationId,
-    );
-
-    return matchingLocation?.approverEmail?.value ?? null;
+  if (!location) {
+    return null;
   }
+
+  const workflowEmail =
+    typeof location.approverEmailWorkflow?.value === "string"
+      ? location.approverEmailWorkflow.value.trim()
+      : "";
+
+  const customEmail =
+    typeof location.approverEmailCustom?.value === "string"
+      ? location.approverEmailCustom.value.trim()
+      : "";
+
+  return workflowEmail || customEmail || null;
+}
 }
