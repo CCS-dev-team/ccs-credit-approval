@@ -3,6 +3,7 @@ import { logger } from "../lib/logger.server";
 
 export type SendApprovalEmailInput = {
   to: string;
+  cc?: string | string[];
   subject: string;
   text: string;
   html?: string;
@@ -22,6 +23,7 @@ type SendGridContentItem = {
 class ApprovalEmailService {
   async send({
     to,
+    cc,
     subject,
     text,
     html,
@@ -41,6 +43,9 @@ class ApprovalEmailService {
     }
 
     const normalizedTo = normalizeEmail(to);
+    const normalizedCc = normalizeEmailList(cc).filter(
+      (email) => email !== normalizedTo,
+    );
     const normalizedSubject = normalizeText(subject);
     const normalizedText = normalizeText(text);
     const normalizedHtml = normalizeOptionalText(html);
@@ -56,6 +61,14 @@ class ApprovalEmailService {
       return {
         ok: false,
         error: "Recipient email is invalid",
+      };
+    }
+
+    const invalidCc = normalizedCc.find((email) => !isValidEmail(email));
+    if (invalidCc) {
+      return {
+        ok: false,
+        error: `CC email is invalid: ${invalidCc}`,
       };
     }
 
@@ -89,13 +102,17 @@ class ApprovalEmailService {
       });
     }
 
+    const personalization: Record<string, unknown> = {
+      to: [{ email: normalizedTo }],
+      subject: normalizedSubject,
+    };
+
+    if (normalizedCc.length > 0) {
+      personalization.cc = normalizedCc.map((email) => ({ email }));
+    }
+
     const payload: Record<string, unknown> = {
-      personalizations: [
-        {
-          to: [{ email: normalizedTo }],
-          subject: normalizedSubject,
-        },
-      ],
+      personalizations: [personalization],
       from: {
         email: config.SENDGRID_FROM_EMAIL,
         name: config.SENDGRID_FROM_NAME || undefined,
@@ -134,6 +151,7 @@ class ApprovalEmailService {
         {
           event: "approval-email.send.request-failed",
           to: normalizedTo,
+          cc: normalizedCc,
           subject: normalizedSubject,
           message,
           error,
@@ -153,6 +171,7 @@ class ApprovalEmailService {
         {
           event: "approval-email.send.success",
           to: normalizedTo,
+          cc: normalizedCc,
           subject: normalizedSubject,
           statusCode: response.status,
           clickTrackingDisabled: true,
@@ -178,6 +197,7 @@ class ApprovalEmailService {
       {
         event: "approval-email.send.failed",
         to: normalizedTo,
+        cc: normalizedCc,
         subject: normalizedSubject,
         statusCode: response.status,
         responseText,
@@ -204,6 +224,14 @@ function normalizeOptionalText(value: string | null | undefined): string {
 
 function normalizeEmail(value: string | null | undefined): string {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function normalizeEmailList(value: string | string[] | null | undefined): string[] {
+  const values = Array.isArray(value) ? value : value ? [value] : [];
+
+  return Array.from(
+    new Set(values.map((item) => normalizeEmail(item)).filter(Boolean)),
+  );
 }
 
 function isValidEmail(value: string): boolean {

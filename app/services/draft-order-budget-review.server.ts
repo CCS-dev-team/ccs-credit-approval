@@ -29,7 +29,11 @@ export type DraftOrderBudgetReviewResult = {
   emailSent: boolean;
   notificationStatus: "not_required" | "sent" | "failed";
   approvalReason: DraftApprovalReason;
-  budgetStatus: "within_limit" | "exceeded";
+  budgetStatus:
+    | "within_limit"
+    | "exceeded"
+    | "config_rejected"
+    | "invalid_config";
   budgetReason: string;
   budgetTriggerScope: "customer" | "company" | "both" | "none";
   approverEmail: string;
@@ -86,6 +90,7 @@ type DraftOrderGraphqlResponse = {
       invoiceUrl?: string | null;
       customer?: {
         id: string;
+        email?: string | null;
       } | null;
       purchasingEntity?: {
         __typename?: string;
@@ -172,6 +177,8 @@ export async function reviewDraftOrderBudget({
       "Draft order does not have a customer attached",
     );
   }
+
+  const creatorEmail = normalizeOptionalString(draftOrder.customer?.email) ?? "";
 
   const companyId = purchasingEntity.company.id;
   const companyName = purchasingEntity.company.name ?? "";
@@ -310,6 +317,7 @@ export async function reviewDraftOrderBudget({
           companyLocationId,
           customerId,
           approverEmail: resolvedApproverEmail,
+          creatorEmail,
           approvalReason,
           error: markSubmittedResult.error,
         },
@@ -327,6 +335,7 @@ export async function reviewDraftOrderBudget({
         notificationContext: {
           approvalReason,
           approverEmail: resolvedApproverEmail,
+          creatorEmail,
           reviewUrl,
           invoiceUrl,
           emailSubject,
@@ -354,6 +363,7 @@ export async function reviewDraftOrderBudget({
             companyLocationId,
             customerId,
             approverEmail: resolvedApproverEmail,
+            creatorEmail,
             approvalReason,
           },
           "Draft order submission notification was already sent",
@@ -371,6 +381,7 @@ export async function reviewDraftOrderBudget({
             companyLocationId,
             customerId,
             approverEmail: resolvedApproverEmail,
+            creatorEmail,
             approvalReason,
             submissionStatus: submissionResult.status,
             submissionReason: submissionResult.reason,
@@ -408,11 +419,13 @@ export async function reviewDraftOrderBudget({
       approvalReason,
       notify,
       approverEmail: resolvedApproverEmail,
+      creatorEmail,
       emailSent,
       notificationStatus,
       hasPurchaseOrderNumber: Boolean(resolvedPurchaseOrder.value),
       purchaseOrderSource: resolvedPurchaseOrder.source,
       hasReviewUrl: Boolean(reviewUrl),
+      hasCreatorEmail: Boolean(creatorEmail),
     },
     "Draft order budget review completed",
   );
@@ -467,6 +480,7 @@ async function getDraftOrderForBudgetReview({
         invoiceUrl
         customer {
           id
+          email
         }
         purchasingEntity {
           __typename

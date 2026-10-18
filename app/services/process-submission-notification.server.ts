@@ -11,6 +11,7 @@ import {
 export interface SubmissionNotificationContext {
   approvalReason?: string | null;
   approverEmail?: string | null;
+  creatorEmail?: string | null;
   reviewUrl?: string | null;
   invoiceUrl?: string | null;
   emailSubject?: string | null;
@@ -52,6 +53,7 @@ export async function processSubmissionNotification({
       hasNotificationContext: Boolean(normalizedContext),
       hasApprovalReason: Boolean(normalizedContext?.approvalReason),
       hasApproverEmail: Boolean(normalizedContext?.approverEmail),
+      hasCreatorEmail: Boolean(normalizedContext?.creatorEmail),
       hasReviewUrl: Boolean(normalizedContext?.reviewUrl),
       hasInvoiceUrl: Boolean(normalizedContext?.invoiceUrl),
       hasEmailSubject: Boolean(normalizedContext?.emailSubject),
@@ -84,6 +86,7 @@ export async function processSubmissionNotification({
         approverEmail: result.approverEmail,
         hasNotificationContext: Boolean(normalizedContext),
         usedReviewUrl: Boolean(normalizedContext?.reviewUrl),
+        usedCreatorEmail: Boolean(normalizedContext?.creatorEmail),
       },
       "Completed submission notification processing",
     );
@@ -96,6 +99,7 @@ export async function processSubmissionNotification({
         shop,
         draftOrderId,
         hasNotificationContext: Boolean(normalizedContext),
+        hasCreatorEmail: Boolean(normalizedContext?.creatorEmail),
         error,
       },
       "Submission notification processing threw an unhandled error",
@@ -115,6 +119,7 @@ function normalizeNotificationContext(
   const normalized: SubmissionNotificationContext = {
     approvalReason: normalizeOptionalString(value.approvalReason),
     approverEmail: normalizeOptionalString(value.approverEmail),
+    creatorEmail: normalizeOptionalString(value.creatorEmail),
     reviewUrl: normalizeOptionalString(value.reviewUrl),
     invoiceUrl: normalizeOptionalString(value.invoiceUrl),
     emailSubject: normalizeOptionalString(value.emailSubject),
@@ -128,6 +133,7 @@ function normalizeNotificationContext(
   if (
     !normalized.approvalReason &&
     !normalized.approverEmail &&
+    !normalized.creatorEmail &&
     !normalized.reviewUrl &&
     !normalized.invoiceUrl &&
     !normalized.emailSubject &&

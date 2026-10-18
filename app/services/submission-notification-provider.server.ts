@@ -89,7 +89,10 @@ type CompanyLocationApproverQueryResponse = {
   node: null | {
     __typename?: string | null;
     id?: string | null;
-    metafield?: {
+    metafieldWorkflowApproverEmail?: {
+      value?: string | null;
+    } | null;
+    metafieldCustomWorkflowApproverEmail?: {
       value?: string | null;
     } | null;
   };
@@ -191,7 +194,10 @@ const COMPANY_LOCATION_APPROVER_QUERY = `#graphql
       __typename
       ... on CompanyLocation {
         id
-        metafield(namespace: "custom", key: "workflow_approver_email") {
+        metafieldWorkflowApproverEmail: metafield(namespace: "workflow", key: "approver_email") {
+          value
+        }
+        metafieldCustomWorkflowApproverEmail: metafield(namespace: "custom", key: "workflow_approver_email") {
           value
         }
       }
@@ -267,6 +273,8 @@ export class ShopifySubmissionNotificationDataProvider
       );
     }
 
+    const customerEmail = normalizeEmail(draft.customer?.email);
+
     const poNumber =
       normalizeString(draft.metafieldPurchaseOrderNumber?.value) ??
       resolvePurchaseOrderNumber(draft.customAttributes) ??
@@ -285,6 +293,19 @@ export class ShopifySubmissionNotificationDataProvider
       "Resolved purchase order number for submission notification",
     );
 
+    logger.info(
+      {
+        event: "submission-notification.provider.context-resolved",
+        shop,
+        draftOrderId: draftId,
+        companyLocationId,
+        hasCustomerEmail: Boolean(customerEmail),
+        hasApproverEmail: Boolean(approverEmail),
+        approvalLinkType: draft.invoiceUrl ? "invoice" : "none",
+      },
+      "Resolved submission notification draft context",
+    );
+
     return {
       id: draft.id,
       shop,
@@ -299,7 +320,7 @@ export class ShopifySubmissionNotificationDataProvider
       poNumber,
 
       customerName: normalizeString(draft.customer?.displayName),
-      customerEmail: normalizeEmail(draft.customer?.email),
+      customerEmail,
 
       companyName:
         draft.purchasingEntity?.__typename === "PurchasingCompany"
@@ -431,10 +452,43 @@ export class ShopifySubmissionNotificationDataProvider
     );
 
     if (response.node?.__typename !== "CompanyLocation") {
+      logger.info(
+        {
+          event: "submission-notification.provider.approver.company-location-not-found",
+          shop,
+          companyLocationId: locationId,
+        },
+        "Company location not found while resolving approver email",
+      );
       return null;
     }
 
-    return normalizeEmail(response.node.metafield?.value);
+    const workflowApproverEmail = normalizeEmail(
+      response.node.metafieldWorkflowApproverEmail?.value,
+    );
+    const customApproverEmail = normalizeEmail(
+      response.node.metafieldCustomWorkflowApproverEmail?.value,
+    );
+    const resolvedApproverEmail =
+      workflowApproverEmail ?? customApproverEmail ?? null;
+
+    logger.info(
+      {
+        event: "submission-notification.provider.approver.resolved",
+        shop,
+        companyLocationId: locationId,
+        hasWorkflowApproverEmail: Boolean(workflowApproverEmail),
+        hasCustomApproverEmail: Boolean(customApproverEmail),
+        resolvedSource: workflowApproverEmail
+          ? "workflow.approver_email"
+          : customApproverEmail
+            ? "custom.workflow_approver_email"
+            : "none",
+      },
+      "Resolved company location approver email",
+    );
+
+    return resolvedApproverEmail;
   }
 }
 

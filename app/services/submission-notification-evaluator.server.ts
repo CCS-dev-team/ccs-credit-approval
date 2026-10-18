@@ -17,6 +17,7 @@ export type SubmissionNotificationReason =
 export interface SubmissionNotificationContext {
   approvalReason?: string | null;
   approverEmail?: string | null;
+  creatorEmail?: string | null;
   reviewUrl?: string | null;
   invoiceUrl?: string | null;
   emailSubject?: string | null;
@@ -112,10 +113,21 @@ export class SubmissionNotificationEvaluatorService {
         shop: input.shop,
         draftOrderId: input.draftOrderId,
         hasNotificationContext: Boolean(input.notificationContext),
-        hasReviewUrl: Boolean(normalizeOptionalString(input.notificationContext?.reviewUrl)),
-        hasInvoiceUrl: Boolean(normalizeOptionalString(input.notificationContext?.invoiceUrl)),
-        hasCustomSubject: Boolean(normalizeOptionalString(input.notificationContext?.emailSubject)),
-        hasCustomBody: Boolean(normalizeOptionalString(input.notificationContext?.emailBody)),
+        hasReviewUrl: Boolean(
+          normalizeOptionalString(input.notificationContext?.reviewUrl),
+        ),
+        hasInvoiceUrl: Boolean(
+          normalizeOptionalString(input.notificationContext?.invoiceUrl),
+        ),
+        hasCustomSubject: Boolean(
+          normalizeOptionalString(input.notificationContext?.emailSubject),
+        ),
+        hasCustomBody: Boolean(
+          normalizeOptionalString(input.notificationContext?.emailBody),
+        ),
+        hasCreatorEmail: Boolean(
+          normalizeEmail(input.notificationContext?.creatorEmail),
+        ),
       },
       "Starting submission notification evaluation",
     );
@@ -278,8 +290,13 @@ export class SubmissionNotificationEvaluatorService {
         ? buildExceededApprovalHtmlBody(mergedDraft)
         : buildStandardApprovalHtmlBody(mergedDraft);
 
+    const creatorEmail = normalizeEmail(mergedDraft.customerEmail);
+    const ccEmail =
+      creatorEmail && creatorEmail !== approverEmail ? creatorEmail : undefined;
+
     const sendResult = await approvalEmailService.send({
       to: approverEmail,
+      cc: ccEmail,
       subject,
       text,
       html,
@@ -292,6 +309,8 @@ export class SubmissionNotificationEvaluatorService {
           shop: mergedDraft.shop,
           draftOrderId: mergedDraft.id,
           approverEmail,
+          creatorEmail,
+          ccApplied: Boolean(ccEmail),
           approvalReason,
           budgetStatus: mergedDraft.budgetStatus ?? null,
           statusCode: sendResult.statusCode,
@@ -326,6 +345,8 @@ export class SubmissionNotificationEvaluatorService {
           shop: mergedDraft.shop,
           draftOrderId: mergedDraft.id,
           approverEmail,
+          creatorEmail,
+          ccApplied: Boolean(ccEmail),
           approvalReason,
           budgetStatus: mergedDraft.budgetStatus ?? null,
           notifiedAt,
@@ -349,6 +370,8 @@ export class SubmissionNotificationEvaluatorService {
         shop: mergedDraft.shop,
         draftOrderId: mergedDraft.id,
         approverEmail,
+        creatorEmail,
+        ccApplied: Boolean(ccEmail),
         companyLocationId: mergedDraft.companyLocationId,
         approvalReason,
         budgetStatus: mergedDraft.budgetStatus ?? null,
@@ -376,16 +399,21 @@ function mergeDraftWithNotificationContext(
   const reviewUrl = normalizeOptionalString(context?.reviewUrl);
   const invoiceUrl = normalizeOptionalString(context?.invoiceUrl);
   const approvalLink = reviewUrl || normalizeOptionalString(draft.approvalLink);
+  const creatorEmail = normalizeEmail(context?.creatorEmail);
 
   return {
     ...draft,
     name: normalizeOptionalString(context?.draftOrderName) || draft.name,
-    poNumber: normalizeOptionalString(context?.purchaseOrderNumber) || draft.poNumber,
-    companyName: normalizeOptionalString(context?.companyName) || draft.companyName,
+    poNumber:
+      normalizeOptionalString(context?.purchaseOrderNumber) || draft.poNumber,
+    companyName:
+      normalizeOptionalString(context?.companyName) || draft.companyName,
     companyLocationName:
-      normalizeOptionalString(context?.companyLocationName) || draft.companyLocationName,
+      normalizeOptionalString(context?.companyLocationName) ||
+      draft.companyLocationName,
     approverEmail:
       normalizeOptionalString(context?.approverEmail) || draft.approverEmail,
+    customerEmail: creatorEmail || draft.customerEmail,
     approvalReason:
       normalizeApprovalReason(context?.approvalReason) || draft.approvalReason,
     reviewUrl,
@@ -468,8 +496,10 @@ function isRelevantDraft(draft: DraftSubmissionContext): boolean {
 }
 
 function resolveReviewUrl(draft: DraftSubmissionContext): string | null {
-  return normalizeOptionalString(draft.reviewUrl) ||
-    normalizeOptionalString(draft.approvalLink);
+  return (
+    normalizeOptionalString(draft.reviewUrl) ||
+    normalizeOptionalString(draft.approvalLink)
+  );
 }
 
 function resolveInvoiceUrl(draft: DraftSubmissionContext): string | null {
