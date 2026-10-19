@@ -2,20 +2,51 @@ import type { ActionFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import { logger } from "../lib/logger.server";
 import { processSubmissionNotification } from "../services/process-submission-notification.server";
+import { processDraftOrderLifecycleNotification } from "../services/process-draft-order-lifecycle-notification.server";
 
 type DraftOrderWebhookPayload =
   | {
       id?: number | string;
       admin_graphql_api_id?: string;
+      name?: string | null;
+      invoice_url?: string | null;
+      purchase_order_number?: string | null;
+      po_number?: string | null;
+      note?: string | null;
+      email?: string | null;
+      customer?: {
+        email?: string | null;
+        display_name?: string | null;
+      } | null;
+      company_name?: string | null;
+      company_location_name?: string | null;
+      rejection_reason?: string | null;
     }
   | null
   | undefined;
 
-type SupportedDraftOrderTopic = "DRAFT_ORDERS_CREATE" | "DRAFT_ORDERS_UPDATE";
+type SupportedDraftOrderTopic =
+  | "DRAFT_ORDERS_CREATE"
+  | "DRAFT_ORDERS_UPDATE"
+  | "DRAFT_ORDERS_DELETE";
+
+type NotificationProcessorResult = {
+  status: "sent" | "skipped" | "failed";
+  reason: string;
+  approverEmail?: string | null;
+  creatorEmail?: string | null;
+  lifecycleState?: string | null;
+};
+
+type DraftOrderWebhookProcessResult = {
+  submission: NotificationProcessorResult | null;
+  lifecycle: NotificationProcessorResult | null;
+};
 
 const SUPPORTED_TOPICS: ReadonlySet<string> = new Set([
   "DRAFT_ORDERS_CREATE",
   "DRAFT_ORDERS_UPDATE",
+  "DRAFT_ORDERS_DELETE",
 ]);
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -24,7 +55,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (!shop) {
     logger.error(
       {
-        event: "submission-notification.webhook.missing-shop",
+        event: "draft-order-notification.webhook.missing-shop",
         topic,
       },
       "Webhook received without shop domain",
@@ -36,7 +67,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (!admin) {
     logger.error(
       {
-        event: "submission-notification.webhook.missing-admin",
+        event: "draft-order-notification.webhook.missing-admin",
         topic,
         shop,
       },
@@ -49,7 +80,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (!isSupportedDraftOrderTopic(topic)) {
     logger.info(
       {
-        event: "submission-notification.webhook.ignored-topic",
+        event: "draft-order-notification.webhook.ignored-topic",
         topic,
         shop,
       },
@@ -64,7 +95,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (!draftOrderId) {
     logger.error(
       {
-        event: "submission-notification.webhook.missing-draft-id",
+        event: "draft-order-notification.webhook.missing-draft-id",
         topic,
         shop,
         payload,
@@ -77,10 +108,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   logger.info(
     {
-      event: "submission-notification.webhook.received",
+      event: "draft-order-notification.webhook.received",
       topic,
       shop,
       draftOrderId,
+      hasPayloadName: Boolean(getPayloadString(payload, "name")),
+      hasPayloadInvoiceUrl: Boolean(getPayloadString(payload, "invoice_url")),
+      hasPayloadCustomerEmail: Boolean(getPayloadCustomerEmail(payload)),
+      hasPayloadRejectionReason: Boolean(
+        getPayloadString(payload, "rejection_reason"),
+      ),
     },
     "Received draft order webhook for notification processing",
   );
@@ -90,24 +127,31 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       topic,
       shop,
       draftOrderId,
+      payload,
       graphql: (query, options) => admin.graphql(query, options),
     });
 
     logger.info(
       {
-        event: "submission-notification.webhook.processed",
+        event: "draft-order-notification.webhook.processed",
         topic,
         shop,
         draftOrderId,
-        status: result.status,
-        reason: result.reason,
-        approverEmail: result.approverEmail,
+        submissionStatus: result.submission?.status ?? null,
+        submissionReason: result.submission?.reason ?? null,
+        submissionApproverEmail: result.submission?.approverEmail ?? null,
+        lifecycleStatus: result.lifecycle?.status ?? null,
+        lifecycleReason: result.lifecycle?.reason ?? null,
+        lifecycleCreatorEmail: result.lifecycle?.creatorEmail ?? null,
+        lifecycleState: result.lifecycle?.lifecycleState ?? null,
       },
       "Draft order webhook processed",
     );
 
-    if (result.status === "failed") {
-      return new Response(`Processing failed: ${result.reason}`, {
+    const failedResult = getFailedResult(result);
+
+    if (failedResult) {
+      return new Response(`Processing failed: ${failedResult.reason}`, {
         status: 500,
       });
     }
@@ -116,7 +160,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   } catch (error) {
     logger.error(
       {
-        event: "submission-notification.webhook.exception",
+        event: "draft-order-notification.webhook.exception",
         topic,
         shop,
         draftOrderId,
@@ -133,35 +177,134 @@ async function processDraftOrderWebhook({
   topic,
   shop,
   draftOrderId,
+  payload,
   graphql,
 }: {
   topic: SupportedDraftOrderTopic;
   shop: string;
   draftOrderId: string;
+  payload: DraftOrderWebhookPayload;
   graphql: (
     query: string,
     options?: { variables?: Record<string, unknown> },
   ) => Promise<Response>;
-}) {
+}): Promise<DraftOrderWebhookProcessResult> {
   logger.info(
     {
-      event: "submission-notification.webhook.dispatch",
+      event: "draft-order-notification.webhook.dispatch",
       topic,
       shop,
       draftOrderId,
     },
-    "Dispatching draft order webhook to submission notification processor",
+    "Dispatching draft order webhook to notification processors",
   );
 
   switch (topic) {
-    case "DRAFT_ORDERS_CREATE":
-    case "DRAFT_ORDERS_UPDATE":
-      return processSubmissionNotification({
+    case "DRAFT_ORDERS_CREATE": {
+      const submission = await processSubmissionNotification({
         shop,
         draftOrderId,
         graphql,
       });
+
+      return {
+        submission,
+        lifecycle: null,
+      };
+    }
+
+    case "DRAFT_ORDERS_UPDATE": {
+      const submission = await processSubmissionNotification({
+        shop,
+        draftOrderId,
+        graphql,
+      });
+
+      const lifecycle = await processDraftOrderLifecycleNotification({
+        shop,
+        draftOrderId,
+        graphql,
+        notificationContext: buildLifecycleNotificationContext(topic, payload),
+      });
+
+      return {
+        submission,
+        lifecycle,
+      };
+    }
+
+    case "DRAFT_ORDERS_DELETE": {
+      const lifecycle = await processDraftOrderLifecycleNotification({
+        shop,
+        draftOrderId,
+        graphql,
+        notificationContext: buildLifecycleNotificationContext(topic, payload),
+      });
+
+      return {
+        submission: null,
+        lifecycle,
+      };
+    }
   }
+}
+
+function buildLifecycleNotificationContext(
+  topic: SupportedDraftOrderTopic,
+  payload: DraftOrderWebhookPayload,
+) {
+  if (!payload || typeof payload !== "object") {
+    return topic === "DRAFT_ORDERS_DELETE"
+      ? { workflowApprovalState: "rejected" as const }
+      : undefined;
+  }
+
+  const creatorEmail = getPayloadCustomerEmail(payload);
+  const invoiceUrl = getPayloadString(payload, "invoice_url");
+  const draftOrderName = getPayloadString(payload, "name");
+  const purchaseOrderNumber =
+    getPayloadString(payload, "purchase_order_number") ||
+    getPayloadString(payload, "po_number");
+  const companyName = getPayloadString(payload, "company_name");
+  const companyLocationName = getPayloadString(payload, "company_location_name");
+  const rejectionReason = getPayloadString(payload, "rejection_reason");
+
+  if (topic === "DRAFT_ORDERS_DELETE") {
+    return {
+      workflowApprovalState: "rejected" as const,
+      creatorEmail,
+      invoiceUrl,
+      draftOrderName,
+      purchaseOrderNumber,
+      companyName,
+      companyLocationName,
+      rejectionReason,
+    };
+  }
+
+  return {
+    creatorEmail,
+    invoiceUrl,
+    draftOrderName,
+    purchaseOrderNumber,
+    companyName,
+    companyLocationName,
+    rejectionReason,
+  };
+}
+
+function getFailedResult(
+  result: DraftOrderWebhookProcessResult,
+): NotificationProcessorResult | null {
+  if (result.submission?.status === "failed") {
+    return result.submission;
+  }
+
+  if (result.lifecycle?.status === "failed") {
+    return result.lifecycle;
+  }
+
+  return null;
 }
 
 function isSupportedDraftOrderTopic(
@@ -184,5 +327,44 @@ function extractDraftOrderId(payload: DraftOrderWebhookPayload): string | null {
   }
 
   return null;
+}
+
+function getPayloadString(
+  payload: DraftOrderWebhookPayload,
+  key: keyof NonNullable<DraftOrderWebhookPayload>,
+): string | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+
+  const value = payload[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function getPayloadCustomerEmail(
+  payload: DraftOrderWebhookPayload,
+): string | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+
+  const directEmail =
+    typeof payload.email === "string" && payload.email.trim()
+      ? payload.email.trim().toLowerCase()
+      : undefined;
+
+  if (directEmail) {
+    return directEmail;
+  }
+
+  const customerEmail =
+    payload.customer &&
+    typeof payload.customer === "object" &&
+    typeof payload.customer.email === "string" &&
+    payload.customer.email.trim()
+      ? payload.customer.email.trim().toLowerCase()
+      : undefined;
+
+  return customerEmail;
 }
 

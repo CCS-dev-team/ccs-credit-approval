@@ -16,8 +16,19 @@ redirect_urls = [
 ]
 
 [webhooks]
-api_version = "2026-07"
+api_version = "2026-10"
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = [ "app/uninstalled" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/scopes_update"
+  topics = [ "app/scopes_update" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/draft-orders"
+  topics = [ "draft_orders/create", "draft_orders/update", "draft_orders/delete" ]
 
 [build]
 automatically_update_urls_on_dev = false
-

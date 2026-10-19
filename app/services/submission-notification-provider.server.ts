@@ -10,6 +10,62 @@ export type AdminGraphqlExecutor = (
   options?: { variables?: Record<string, unknown> },
 ) => Promise<Response>;
 
+export type DraftOrderLifecycleState = "edited" | "approved" | "rejected";
+
+export interface DraftOrderLifecycleContext {
+  id: string;
+  shop: string;
+  name: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  status?: string | null;
+  isOpen?: boolean | null;
+
+  totalAmount?: number | null;
+  currencyCode?: string | null;
+  poNumber?: string | null;
+
+  customerName?: string | null;
+  customerEmail?: string | null;
+
+  companyName?: string | null;
+  companyLocationId?: string | null;
+  companyLocationName?: string | null;
+  approverEmail?: string | null;
+
+  workflowApprovalState?: string | null;
+  submissionNotifiedAt?: string | null;
+  creatorEditedNotifiedAt?: string | null;
+  creatorApprovedNotifiedAt?: string | null;
+  creatorRejectedNotifiedAt?: string | null;
+  rejectionReason?: string | null;
+
+  approvalReason?: "standard" | "credit_limit_exceeded" | null;
+
+  budgetStatus?: string | null;
+  budgetReason?: string | null;
+  budgetTriggerScope?: string | null;
+
+  customerCreditLimit?: number | null;
+  customerRemainingCredit?: number | null;
+  customerAmountExceededBy?: number | null;
+
+  companyCreditLimit?: number | null;
+  companyRemainingCredit?: number | null;
+  companyAmountExceededBy?: number | null;
+
+  approvalLink?: string | null;
+  reviewUrl?: string | null;
+  invoiceUrl?: string | null;
+}
+
+export interface MarkDraftOrderLifecycleNotifiedInput {
+  shop: string;
+  draftOrderId: string;
+  lifecycleState: DraftOrderLifecycleState;
+  notifiedAt: string;
+}
+
 type GraphqlResponse<T> = {
   data?: T;
   errors?: Array<{ message: string }>;
@@ -23,6 +79,8 @@ type DraftContextQueryResponse = {
     presentmentCurrencyCode?: string | null;
     invoiceUrl?: string | null;
     createdAt?: string | null;
+    updatedAt?: string | null;
+    status?: string | null;
     customAttributes?: Array<{
       key?: string | null;
       value?: string | null;
@@ -69,6 +127,18 @@ type DraftContextQueryResponse = {
       value?: string | null;
     } | null;
     metafieldBudgetCompanyAmountExceededBy?: {
+      value?: string | null;
+    } | null;
+    metafieldCreatorEditedNotifiedAt?: {
+      value?: string | null;
+    } | null;
+    metafieldCreatorApprovedNotifiedAt?: {
+      value?: string | null;
+    } | null;
+    metafieldCreatorRejectedNotifiedAt?: {
+      value?: string | null;
+    } | null;
+    metafieldRejectionReason?: {
       value?: string | null;
     } | null;
     purchasingEntity?: {
@@ -119,10 +189,12 @@ const DRAFT_SUBMISSION_CONTEXT_QUERY = `#graphql
     draftOrder(id: $id) {
       id
       name
+      status
       totalPrice
       presentmentCurrencyCode
       invoiceUrl
       createdAt
+      updatedAt
       customAttributes {
         key
         value
@@ -169,6 +241,18 @@ const DRAFT_SUBMISSION_CONTEXT_QUERY = `#graphql
         value
       }
       metafieldBudgetCompanyAmountExceededBy: metafield(namespace: "custom", key: "budget_company_amount_exceeded_by") {
+        value
+      }
+      metafieldCreatorEditedNotifiedAt: metafield(namespace: "custom", key: "creator_edited_notified_at") {
+        value
+      }
+      metafieldCreatorApprovedNotifiedAt: metafield(namespace: "custom", key: "creator_approved_notified_at") {
+        value
+      }
+      metafieldCreatorRejectedNotifiedAt: metafield(namespace: "custom", key: "creator_rejected_notified_at") {
+        value
+      }
+      metafieldRejectionReason: metafield(namespace: "custom", key: "rejection_reason") {
         value
       }
       purchasingEntity {
@@ -232,145 +316,59 @@ export class ShopifySubmissionNotificationDataProvider
     shop: string,
     draftOrderId: string,
   ): Promise<DraftSubmissionContext | null> {
-    const draftId = toGid("DraftOrder", draftOrderId);
-
-    const response = await graphqlRequest<DraftContextQueryResponse>(
-      this.graphql,
-      DRAFT_SUBMISSION_CONTEXT_QUERY,
-      { id: draftId },
-      {
-        shop,
-        operation: "draft_submission_context",
-        draftOrderId: draftId,
-      },
-    );
-
-    const draft = response.draftOrder;
+    const draft = await this.fetchDraftContext(shop, draftOrderId);
 
     if (!draft) {
-      logger.info(
-        {
-          event: "submission-notification.provider.draft.not-found",
-          shop,
-          draftOrderId: draftId,
-        },
-        "Draft order not found for submission notification context",
-      );
       return null;
     }
 
-    const companyLocationId =
-      draft.purchasingEntity?.__typename === "PurchasingCompany"
-        ? normalizeString(draft.purchasingEntity.companyLocation?.id)
-        : null;
-
-    let approverEmail: string | null = null;
-
-    if (companyLocationId) {
-      approverEmail = await this.getCompanyLocationApproverEmail(
-        shop,
-        companyLocationId,
-      );
-    }
-
-    const customerEmail = normalizeEmail(draft.customer?.email);
-
-    const poNumber =
-      normalizeString(draft.metafieldPurchaseOrderNumber?.value) ??
-      resolvePurchaseOrderNumber(draft.customAttributes) ??
-      null;
-
-    logger.info(
-      {
-        event: "submission-notification.provider.po-resolution",
-        shop,
-        draftOrderId: draftId,
-        metafieldPurchaseOrderNumber:
-          draft.metafieldPurchaseOrderNumber?.value ?? null,
-        customAttributes: draft.customAttributes ?? [],
-        resolvedPoNumber: poNumber,
-      },
-      "Resolved purchase order number for submission notification",
-    );
-
-    logger.info(
-      {
-        event: "submission-notification.provider.context-resolved",
-        shop,
-        draftOrderId: draftId,
-        companyLocationId,
-        hasCustomerEmail: Boolean(customerEmail),
-        hasApproverEmail: Boolean(approverEmail),
-        approvalLinkType: draft.invoiceUrl ? "invoice" : "none",
-      },
-      "Resolved submission notification draft context",
-    );
-
     return {
       id: draft.id,
-      shop,
+      shop: draft.shop,
       name: draft.name,
-      createdAt: normalizeString(draft.createdAt),
+      createdAt: draft.createdAt,
+      status: draft.status,
+      isOpen: draft.isOpen,
 
-      status: null,
-      isOpen: null,
+      totalAmount: draft.totalAmount,
+      currencyCode: draft.currencyCode,
+      poNumber: draft.poNumber,
 
-      totalAmount: parseMoneyAmount(draft.totalPrice),
-      currencyCode: normalizeString(draft.presentmentCurrencyCode),
-      poNumber,
+      customerName: draft.customerName,
+      customerEmail: draft.customerEmail,
 
-      customerName: normalizeString(draft.customer?.displayName),
-      customerEmail,
+      companyName: draft.companyName,
+      companyLocationId: draft.companyLocationId,
+      companyLocationName: draft.companyLocationName,
+      approverEmail: draft.approverEmail,
 
-      companyName:
-        draft.purchasingEntity?.__typename === "PurchasingCompany"
-          ? normalizeString(draft.purchasingEntity.company?.name)
-          : null,
-      companyLocationId,
-      companyLocationName:
-        draft.purchasingEntity?.__typename === "PurchasingCompany"
-          ? normalizeString(draft.purchasingEntity.companyLocation?.name)
-          : null,
-      approverEmail: normalizeEmail(approverEmail),
+      workflowApprovalState: draft.workflowApprovalState,
+      submissionNotifiedAt: draft.submissionNotifiedAt,
+      approvalReason: draft.approvalReason,
 
-      workflowApprovalState: normalizeString(
-        draft.metafieldApprovalState?.value,
-      ),
-      submissionNotifiedAt: normalizeString(
-        draft.metafieldSubmissionNotifiedAt?.value,
-      ),
-      approvalReason: normalizeApprovalReason(
-        draft.metafieldApprovalReason?.value,
-      ),
+      budgetStatus: draft.budgetStatus,
+      budgetReason: draft.budgetReason,
+      budgetTriggerScope: draft.budgetTriggerScope,
 
-      budgetStatus: normalizeString(draft.metafieldBudgetStatus?.value),
-      budgetReason: normalizeString(draft.metafieldBudgetReason?.value),
-      budgetTriggerScope: normalizeBudgetTriggerScope(
-        draft.metafieldBudgetTriggerScope?.value,
-      ),
+      customerCreditLimit: draft.customerCreditLimit,
+      customerRemainingCredit: draft.customerRemainingCredit,
+      customerAmountExceededBy: draft.customerAmountExceededBy,
 
-      customerCreditLimit: parseMoneyAmount(
-        draft.metafieldBudgetCustomerLimitApplied?.value,
-      ),
-      customerRemainingCredit: parseMoneyAmount(
-        draft.metafieldBudgetCustomerRemainingSnapshot?.value,
-      ),
-      customerAmountExceededBy: parseMoneyAmount(
-        draft.metafieldBudgetCustomerAmountExceededBy?.value,
-      ),
+      companyCreditLimit: draft.companyCreditLimit,
+      companyRemainingCredit: draft.companyRemainingCredit,
+      companyAmountExceededBy: draft.companyAmountExceededBy,
 
-      companyCreditLimit: parseMoneyAmount(
-        draft.metafieldBudgetCompanyLimitApplied?.value,
-      ),
-      companyRemainingCredit: parseMoneyAmount(
-        draft.metafieldBudgetCompanyRemainingSnapshot?.value,
-      ),
-      companyAmountExceededBy: parseMoneyAmount(
-        draft.metafieldBudgetCompanyAmountExceededBy?.value,
-      ),
-
-      approvalLink: normalizeString(draft.invoiceUrl),
+      approvalLink: draft.approvalLink,
+      reviewUrl: draft.reviewUrl,
+      invoiceUrl: draft.invoiceUrl,
     };
+  }
+
+  async getDraftOrderLifecycleContext(
+    shop: string,
+    draftOrderId: string,
+  ): Promise<DraftOrderLifecycleContext | null> {
+    return this.fetchDraftContext(shop, draftOrderId);
   }
 
   async markSubmissionNotified(
@@ -432,6 +430,233 @@ export class ShopifySubmissionNotificationDataProvider
       },
       "Draft order marked as submission notified",
     );
+  }
+
+  async markDraftOrderLifecycleNotified(
+    input: MarkDraftOrderLifecycleNotifiedInput,
+  ): Promise<void> {
+    const ownerId = toGid("DraftOrder", input.draftOrderId);
+    const metafieldKey = getLifecycleNotifiedAtMetafieldKey(
+      input.lifecycleState,
+    );
+
+    const metafields: Array<Record<string, unknown>> = [
+      {
+        ownerId,
+        namespace: "custom",
+        key: metafieldKey,
+        type: "date_time",
+        value: input.notifiedAt,
+      },
+    ];
+
+    const response = await graphqlRequest<MetafieldsSetMutationResponse>(
+      this.graphql,
+      METAFIELDS_SET_MUTATION,
+      { metafields },
+      {
+        shop: input.shop,
+        operation: "mark_draft_order_lifecycle_notified",
+        draftOrderId: ownerId,
+        lifecycleState: input.lifecycleState,
+      },
+    );
+
+    const userErrors = response.metafieldsSet?.userErrors ?? [];
+
+    if (userErrors.length > 0) {
+      const message = userErrors
+        .map((error) => error.message)
+        .filter(Boolean)
+        .join("; ");
+
+      throw new Error(
+        `Failed to mark draft lifecycle notification as sent: ${message}`,
+      );
+    }
+
+    logger.info(
+      {
+        event: "draft-order-lifecycle.provider.mark-notified.success",
+        shop: input.shop,
+        draftOrderId: ownerId,
+        lifecycleState: input.lifecycleState,
+        notifiedAt: input.notifiedAt,
+        metafieldKey,
+      },
+      "Draft order lifecycle notification marked as sent",
+    );
+  }
+
+  private async fetchDraftContext(
+    shop: string,
+    draftOrderId: string,
+  ): Promise<DraftOrderLifecycleContext | null> {
+    const draftId = toGid("DraftOrder", draftOrderId);
+
+    const response = await graphqlRequest<DraftContextQueryResponse>(
+      this.graphql,
+      DRAFT_SUBMISSION_CONTEXT_QUERY,
+      { id: draftId },
+      {
+        shop,
+        operation: "draft_submission_context",
+        draftOrderId: draftId,
+      },
+    );
+
+    const draft = response.draftOrder;
+
+    if (!draft) {
+      logger.info(
+        {
+          event: "submission-notification.provider.draft.not-found",
+          shop,
+          draftOrderId: draftId,
+        },
+        "Draft order not found for notification context",
+      );
+
+      return null;
+    }
+
+    const companyLocationId =
+      draft.purchasingEntity?.__typename === "PurchasingCompany"
+        ? normalizeString(draft.purchasingEntity.companyLocation?.id)
+        : null;
+
+    let approverEmail: string | null = null;
+
+    if (companyLocationId) {
+      approverEmail = await this.getCompanyLocationApproverEmail(
+        shop,
+        companyLocationId,
+      );
+    }
+
+    const customerEmail = normalizeEmail(draft.customer?.email);
+
+    const poNumber =
+      normalizeString(draft.metafieldPurchaseOrderNumber?.value) ??
+      resolvePurchaseOrderNumber(draft.customAttributes) ??
+      null;
+
+    const workflowApprovalState =
+      normalizeString(draft.metafieldApprovalState?.value) ??
+      resolveWorkflowApprovalState(draft.customAttributes);
+
+    const rejectionReason =
+      normalizeString(draft.metafieldRejectionReason?.value) ??
+      resolveRejectionReason(draft.customAttributes);
+
+    logger.info(
+      {
+        event: "submission-notification.provider.po-resolution",
+        shop,
+        draftOrderId: draftId,
+        metafieldPurchaseOrderNumber:
+          draft.metafieldPurchaseOrderNumber?.value ?? null,
+        customAttributes: draft.customAttributes ?? [],
+        resolvedPoNumber: poNumber,
+      },
+      "Resolved purchase order number for draft notification context",
+    );
+
+    logger.info(
+      {
+        event: "submission-notification.provider.context-resolved",
+        shop,
+        draftOrderId: draftId,
+        companyLocationId,
+        hasCustomerEmail: Boolean(customerEmail),
+        hasApproverEmail: Boolean(approverEmail),
+        approvalLinkType: draft.invoiceUrl ? "invoice" : "none",
+        status: normalizeString(draft.status),
+        workflowApprovalState,
+        hasRejectionReason: Boolean(rejectionReason),
+      },
+      "Resolved draft notification context",
+    );
+
+    const normalizedStatus = normalizeString(draft.status);
+
+    return {
+      id: draft.id,
+      shop,
+      name: draft.name,
+      createdAt: normalizeString(draft.createdAt),
+      updatedAt: normalizeString(draft.updatedAt),
+
+      status: normalizedStatus,
+      isOpen: inferIsOpenFromStatus(normalizedStatus),
+
+      totalAmount: parseMoneyAmount(draft.totalPrice),
+      currencyCode: normalizeString(draft.presentmentCurrencyCode),
+      poNumber,
+
+      customerName: normalizeString(draft.customer?.displayName),
+      customerEmail,
+
+      companyName:
+        draft.purchasingEntity?.__typename === "PurchasingCompany"
+          ? normalizeString(draft.purchasingEntity.company?.name)
+          : null,
+      companyLocationId,
+      companyLocationName:
+        draft.purchasingEntity?.__typename === "PurchasingCompany"
+          ? normalizeString(draft.purchasingEntity.companyLocation?.name)
+          : null,
+      approverEmail: normalizeEmail(approverEmail),
+
+      workflowApprovalState,
+      submissionNotifiedAt: normalizeString(
+        draft.metafieldSubmissionNotifiedAt?.value,
+      ),
+      creatorEditedNotifiedAt: normalizeString(
+        draft.metafieldCreatorEditedNotifiedAt?.value,
+      ),
+      creatorApprovedNotifiedAt: normalizeString(
+        draft.metafieldCreatorApprovedNotifiedAt?.value,
+      ),
+      creatorRejectedNotifiedAt: normalizeString(
+        draft.metafieldCreatorRejectedNotifiedAt?.value,
+      ),
+      rejectionReason,
+
+      approvalReason: normalizeApprovalReason(
+        draft.metafieldApprovalReason?.value,
+      ),
+
+      budgetStatus: normalizeString(draft.metafieldBudgetStatus?.value),
+      budgetReason: normalizeString(draft.metafieldBudgetReason?.value),
+      budgetTriggerScope: normalizeBudgetTriggerScope(
+        draft.metafieldBudgetTriggerScope?.value,
+      ),
+
+      customerCreditLimit: parseMoneyAmount(
+        draft.metafieldBudgetCustomerLimitApplied?.value,
+      ),
+      customerRemainingCredit: parseMoneyAmount(
+        draft.metafieldBudgetCustomerRemainingSnapshot?.value,
+      ),
+      customerAmountExceededBy: parseMoneyAmount(
+        draft.metafieldBudgetCustomerAmountExceededBy?.value,
+      ),
+
+      companyCreditLimit: parseMoneyAmount(
+        draft.metafieldBudgetCompanyLimitApplied?.value,
+      ),
+      companyRemainingCredit: parseMoneyAmount(
+        draft.metafieldBudgetCompanyRemainingSnapshot?.value,
+      ),
+      companyAmountExceededBy: parseMoneyAmount(
+        draft.metafieldBudgetCompanyAmountExceededBy?.value,
+      ),
+
+      approvalLink: normalizeString(draft.invoiceUrl),
+      reviewUrl: null,
+      invoiceUrl: normalizeString(draft.invoiceUrl),
+    };
   }
 
   private async getCompanyLocationApproverEmail(
@@ -665,6 +890,61 @@ function resolvePurchaseOrderNumber(
   return null;
 }
 
+function resolveWorkflowApprovalState(
+  customAttributes?: Array<{ key?: string | null; value?: string | null }> | null,
+): string | null {
+  if (!customAttributes?.length) {
+    return null;
+  }
+
+  const acceptedKeys = new Set([
+    "approval state",
+    "workflow state",
+    "workflow approval state",
+    "approval_state",
+    "workflow_state",
+    "workflow_approval_state",
+  ]);
+
+  for (const attribute of customAttributes) {
+    const key = normalizeCustomAttributeKey(attribute.key);
+    const value = normalizeString(attribute.value);
+
+    if (key && value && acceptedKeys.has(key)) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function resolveRejectionReason(
+  customAttributes?: Array<{ key?: string | null; value?: string | null }> | null,
+): string | null {
+  if (!customAttributes?.length) {
+    return null;
+  }
+
+  const acceptedKeys = new Set([
+    "rejection reason",
+    "reject reason",
+    "reason",
+    "rejection_reason",
+    "reject_reason",
+  ]);
+
+  for (const attribute of customAttributes) {
+    const key = normalizeCustomAttributeKey(attribute.key);
+    const value = normalizeString(attribute.value);
+
+    if (key && value && acceptedKeys.has(key)) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
 function normalizePurchaseOrderKey(value?: string | null): string | null {
   const normalized = normalizeString(value);
   if (!normalized) return null;
@@ -673,4 +953,59 @@ function normalizePurchaseOrderKey(value?: string | null): string | null {
     .toLowerCase()
     .replace(/[_-]+/g, " ")
     .replace(/\s+/g, " ");
+}
+
+function normalizeCustomAttributeKey(value?: string | null): string | null {
+  return normalizePurchaseOrderKey(value);
+}
+
+function inferIsOpenFromStatus(status?: string | null): boolean | null {
+  const normalized = normalizeString(status)?.toLowerCase();
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    [
+      "invoice_sent",
+      "open",
+      "draft",
+      "pending",
+      "submitted",
+      "editable",
+    ].includes(normalized)
+  ) {
+    return true;
+  }
+
+  if (
+    [
+      "completed",
+      "complete",
+      "converted",
+      "closed",
+      "cancelled",
+      "canceled",
+      "archived",
+      "deleted",
+    ].includes(normalized)
+  ) {
+    return false;
+  }
+
+  return null;
+}
+
+function getLifecycleNotifiedAtMetafieldKey(
+  lifecycleState: DraftOrderLifecycleState,
+): string {
+  switch (lifecycleState) {
+    case "edited":
+      return "creator_edited_notified_at";
+    case "approved":
+      return "creator_approved_notified_at";
+    case "rejected":
+      return "creator_rejected_notified_at";
+  }
 }
