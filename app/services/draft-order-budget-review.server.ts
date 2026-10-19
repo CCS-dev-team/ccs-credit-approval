@@ -302,11 +302,16 @@ export async function reviewDraftOrderBudget({
 
   if (notify) {
     const markSubmittedResult = await markDraftSubmittedForApproval({
-      shop: shopDomain,
-      draftOrderId: draftOrder.id,
-      graphql: (query, options) => admin.graphql(query, options),
-      approvalReason,
-    });
+  shop: shopDomain,
+  draftOrderId: draftOrder.id,
+  graphql: (query, options) => admin.graphql(query, options),
+  approvalReason,
+  approverEmail: resolvedApproverEmail,
+  purchaseOrderNumber: resolvedPurchaseOrder.value,
+  submissionChannel: "checkout",
+  reviewUrl,
+});
+
 
     if (!markSubmittedResult.ok) {
       logger.error(
