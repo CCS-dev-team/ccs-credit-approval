@@ -104,25 +104,26 @@ export class BudgetDecisionService {
 
 if (!hasUserBudget && !hasCompanyBudget) {
   const resolvedApprover = approverEmail || config.FALLBACK_APPROVER_EMAIL;
+const fallbackUsed = !approverEmail && Boolean(config.FALLBACK_APPROVER_EMAIL);
 
-  return {
-    status: "invalid_config",
-    source: "none",
-    reason: "invalid_config",
-    triggerScope: "none",
-    approverEmail: resolvedApprover ?? null,
-    fallbackUsed: false,
-    limitApplied: null,
-    remainingSnapshot: null,
-    amountExceededBy: 0,
-    customerLimitApplied: null,
-    customerRemainingSnapshot: null,
-    customerAmountExceededBy: 0,
-    companyLimitApplied: null,
-    companyRemainingSnapshot: null,
-    companyAmountExceededBy: 0,
-    configResolution: "not_applicable",
-  };
+return {
+  status: "invalid_config",
+  source: "none",
+  reason: "invalid_config",
+  triggerScope: "none",
+  approverEmail: resolvedApprover ?? null,
+  fallbackUsed,
+  limitApplied: null,
+  remainingSnapshot: null,
+  amountExceededBy: 0,
+  customerLimitApplied: null,
+  customerRemainingSnapshot: null,
+  customerAmountExceededBy: 0,
+  companyLimitApplied: null,
+  companyRemainingSnapshot: null,
+  companyAmountExceededBy: 0,
+  configResolution: "not_applicable",
+};
 }
 
     const customerAmountExceededBy = hasUserBudget
