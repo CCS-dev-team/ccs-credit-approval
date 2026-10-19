@@ -400,7 +400,7 @@ function createSyntheticDraftContext({
     creatorRejectedNotifiedAt: null,
     rejectionReason,
 
-    approvalReason: null,
+    approvalReason: normalizeOptionalString(context.approvalReason),
 
     budgetStatus: null,
     budgetReason: null,
@@ -449,6 +449,8 @@ function mergeDraftWithNotificationContext(
     approvalLink: reviewUrl || invoiceUrl || draft.approvalLink,
     rejectionReason:
       normalizeOptionalString(context?.rejectionReason) || draft.rejectionReason,
+    approvalReason:
+      normalizeOptionalString(context?.approvalReason) || draft.approvalReason,
   };
 }
 
@@ -547,6 +549,8 @@ function getLifecycleNotifiedAt(
       return normalizeOptionalString(draft.creatorApprovedNotifiedAt);
     case "rejected":
       return normalizeOptionalString(draft.creatorRejectedNotifiedAt);
+    default:
+      return null;
   }
 }
 
@@ -563,6 +567,8 @@ function buildLifecycleSubject(
       return `Draft approved: ${draftName}`;
     case "rejected":
       return `Draft rejected: ${draftName}`;
+    default:
+      return `Draft update: ${draftName}`;
   }
 }
 
@@ -577,6 +583,8 @@ function buildLifecycleTextBody(
       return buildApprovedTextBody(draft);
     case "rejected":
       return buildRejectedTextBody(draft);
+    default:
+      return buildEditedTextBody(draft);
   }
 }
 
@@ -591,6 +599,8 @@ function buildLifecycleHtmlBody(
       return buildApprovedHtmlBody(draft);
     case "rejected":
       return buildRejectedHtmlBody(draft);
+    default:
+      return buildEditedHtmlBody(draft);
   }
 }
 
@@ -619,11 +629,8 @@ function buildEditedTextBody(draft: DraftOrderLifecycleContext): string {
 }
 
 function buildApprovedTextBody(draft: DraftOrderLifecycleContext): string {
-  const invoiceUrl = resolveInvoiceUrl(draft);
-
   const lines: string[] = [
     "Your draft order has been approved.",
-    "You can now proceed to complete your order.",
     "",
     `Company: ${draft.companyName || "N/A"}`,
     `Location: ${draft.companyLocationName || "N/A"}`,
@@ -634,10 +641,6 @@ function buildApprovedTextBody(draft: DraftOrderLifecycleContext): string {
     `PO number: ${draft.poNumber || "N/A"}`,
     `Total: ${formatMoney(draft.totalAmount, draft.currencyCode)}`,
   ];
-
-  if (invoiceUrl) {
-    lines.push("", `Complete your order: ${invoiceUrl}`);
-  }
 
   return lines.join("\n");
 }
@@ -694,7 +697,7 @@ function buildEditedHtmlBody(draft: DraftOrderLifecycleContext): string {
       <p style="margin:24px 0 12px;">
         <a
           href="${escapeHtml(invoiceUrl)}"
-          style="display:inline-block;padding:12px 18px;background:#111827;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;"
+          style="display:inline-block;padding:12px 18px;background:#166534;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;"
         >
           Complete your order
         </a>
@@ -720,8 +723,6 @@ function buildEditedHtmlBody(draft: DraftOrderLifecycleContext): string {
 }
 
 function buildApprovedHtmlBody(draft: DraftOrderLifecycleContext): string {
-  const invoiceUrl = resolveInvoiceUrl(draft);
-
   const rows: Array<[string, string]> = [
     ["Company", draft.companyName || "N/A"],
     ["Location", draft.companyLocationName || "N/A"],
@@ -744,32 +745,13 @@ function buildApprovedHtmlBody(draft: DraftOrderLifecycleContext): string {
     )
     .join("");
 
-  const cta = invoiceUrl
-    ? `
-      <p style="margin:24px 0 12px;">
-        <a
-          href="${escapeHtml(invoiceUrl)}"
-          style="display:inline-block;padding:12px 18px;background:#166534;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;"
-        >
-          Complete your order
-        </a>
-      </p>
-      <p style="font-size:12px;color:#6b7280;margin:0 0 16px;">
-        If the button does not work, copy and paste this URL into your browser:<br />${escapeHtml(invoiceUrl)}
-      </p>
-    `
-    : "";
-
   return `
     <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5;color:#111827;">
       <p>Your draft order has been approved.</p>
-      <p>You can now proceed to complete your order.</p>
 
       <table style="border-collapse:collapse;width:100%;max-width:720px;">
         ${tableRows}
       </table>
-
-      ${cta}
     </div>
   `.trim();
 }
