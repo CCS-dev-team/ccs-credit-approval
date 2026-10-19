@@ -1,7 +1,6 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import { logger } from "../lib/logger.server";
-import { processSubmissionNotification } from "../services/process-submission-notification.server";
 import { processDraftOrderLifecycleNotification } from "../services/process-draft-order-lifecycle-notification.server";
 
 type DraftOrderWebhookPayload =
@@ -39,7 +38,6 @@ type NotificationProcessorResult = {
 };
 
 type DraftOrderWebhookProcessResult = {
-  submission: NotificationProcessorResult | null;
   lifecycle: NotificationProcessorResult | null;
 };
 
@@ -119,7 +117,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         getPayloadString(payload, "rejection_reason"),
       ),
     },
-    "Received draft order webhook for notification processing",
+    "Received draft order webhook for lifecycle notification processing",
   );
 
   try {
@@ -137,9 +135,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         topic,
         shop,
         draftOrderId,
-        submissionStatus: result.submission?.status ?? null,
-        submissionReason: result.submission?.reason ?? null,
-        submissionApproverEmail: result.submission?.approverEmail ?? null,
         lifecycleStatus: result.lifecycle?.status ?? null,
         lifecycleReason: result.lifecycle?.reason ?? null,
         lifecycleCreatorEmail: result.lifecycle?.creatorEmail ?? null,
@@ -148,10 +143,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       "Draft order webhook processed",
     );
 
-    const failedResult = getFailedResult(result);
-
-    if (failedResult) {
-      return new Response(`Processing failed: ${failedResult.reason}`, {
+    if (result.lifecycle?.status === "failed") {
+      return new Response(`Processing failed: ${result.lifecycle.reason}`, {
         status: 500,
       });
     }
@@ -196,30 +189,27 @@ async function processDraftOrderWebhook({
       shop,
       draftOrderId,
     },
-    "Dispatching draft order webhook to notification processors",
+    "Dispatching draft order webhook to lifecycle notification processor",
   );
 
   switch (topic) {
     case "DRAFT_ORDERS_CREATE": {
-      const submission = await processSubmissionNotification({
-        shop,
-        draftOrderId,
-        graphql,
-      });
+      logger.info(
+        {
+          event: "draft-order-notification.webhook.create-ignored",
+          topic,
+          shop,
+          draftOrderId,
+        },
+        "Ignoring DRAFT_ORDERS_CREATE because submission notifications are handled by Flow",
+      );
 
       return {
-        submission,
         lifecycle: null,
       };
     }
 
     case "DRAFT_ORDERS_UPDATE": {
-      const submission = await processSubmissionNotification({
-        shop,
-        draftOrderId,
-        graphql,
-      });
-
       const lifecycle = await processDraftOrderLifecycleNotification({
         shop,
         draftOrderId,
@@ -228,7 +218,6 @@ async function processDraftOrderWebhook({
       });
 
       return {
-        submission,
         lifecycle,
       };
     }
@@ -242,7 +231,6 @@ async function processDraftOrderWebhook({
       });
 
       return {
-        submission: null,
         lifecycle,
       };
     }
@@ -291,20 +279,6 @@ function buildLifecycleNotificationContext(
     companyLocationName,
     rejectionReason,
   };
-}
-
-function getFailedResult(
-  result: DraftOrderWebhookProcessResult,
-): NotificationProcessorResult | null {
-  if (result.submission?.status === "failed") {
-    return result.submission;
-  }
-
-  if (result.lifecycle?.status === "failed") {
-    return result.lifecycle;
-  }
-
-  return null;
 }
 
 function isSupportedDraftOrderTopic(
