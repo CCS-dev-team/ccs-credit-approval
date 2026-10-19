@@ -6,7 +6,7 @@ export type AdminGraphqlExecutor = (
 ) => Promise<Response>;
 
 export type DraftApprovalReason = "standard" | "credit_limit_exceeded";
-export type DraftSubmissionChannel = "cart" | "credit-limit";
+export type DraftSubmissionChannel = "cart" | "checkout" | "credit-limit";
 
 export interface MarkDraftSubmittedForApprovalInput {
   shop: string;
@@ -17,6 +17,7 @@ export interface MarkDraftSubmittedForApprovalInput {
   purchaseOrderNumber?: string | null;
   submissionChannel?: DraftSubmissionChannel | null;
   submissionType?: string | null;
+  reviewUrl?: string | null;
 }
 
 export interface MarkDraftSubmittedForApprovalResult {
@@ -36,10 +37,6 @@ type GraphqlResponse<T> = {
 type DraftAttribute = {
   key?: string | null;
   value?: string | null;
-};
-
-type DraftTagNode = {
-  tags?: string[] | null;
 };
 
 type DraftSubmissionStateQueryResponse = {
@@ -88,6 +85,7 @@ const APPROVER_EMAIL_KEY = "Approver Email";
 const SUBMISSION_CHANNEL_KEY = "Submission Channel";
 const ORDER_SUBMISSION_TYPE_KEY = "Order Submission Type";
 const PURCHASE_ORDER_NUMBER_KEY = "Purchase Order Number";
+const REVIEW_URL_KEY = "Review URL";
 
 const MARK_DRAFT_SUBMITTED_QUERY = `#graphql
   query GetDraftSubmissionState($id: ID!) {
@@ -149,16 +147,21 @@ export async function markDraftSubmittedForApproval({
   purchaseOrderNumber,
   submissionChannel,
   submissionType,
+  reviewUrl,
 }: MarkDraftSubmittedForApprovalInput): Promise<MarkDraftSubmittedForApprovalResult> {
   const ownerId = toGid("DraftOrder", draftOrderId);
 
   const resolvedApproverEmail = normalizeOptionalString(approverEmail);
   const resolvedPurchaseOrderNumber = normalizeOptionalString(purchaseOrderNumber);
+  const resolvedReviewUrl = normalizeOptionalString(reviewUrl);
   const resolvedSubmissionChannel =
     submissionChannel ?? inferSubmissionChannel(approvalReason);
   const resolvedSubmissionType =
     normalizeOptionalString(submissionType) ??
-    inferSubmissionType(approvalReason);
+    inferSubmissionType({
+      approvalReason,
+      submissionChannel: resolvedSubmissionChannel,
+    });
 
   logger.info(
     {
@@ -171,6 +174,7 @@ export async function markDraftSubmittedForApproval({
       submissionType: resolvedSubmissionType,
       hasApproverEmail: Boolean(resolvedApproverEmail),
       hasPurchaseOrderNumber: Boolean(resolvedPurchaseOrderNumber),
+      hasReviewUrl: Boolean(resolvedReviewUrl),
     },
     "Marking draft order as submitted for approval",
   );
@@ -193,22 +197,20 @@ export async function markDraftSubmittedForApproval({
     };
   }
 
-  const mergedCustomAttributes = mergeCustomAttributes(
-    currentDraft.customAttributes,
-    [
-      { key: WORKFLOW_STATE_KEY, value: "submitted" },
-      { key: APPROVAL_STATE_KEY, value: "submitted" },
-      { key: APPROVAL_REASON_KEY, value: approvalReason },
-      { key: SUBMISSION_CHANNEL_KEY, value: resolvedSubmissionChannel },
-      { key: ORDER_SUBMISSION_TYPE_KEY, value: resolvedSubmissionType },
-      resolvedApproverEmail
-        ? { key: APPROVER_EMAIL_KEY, value: resolvedApproverEmail }
-        : null,
-      resolvedPurchaseOrderNumber
-        ? { key: PURCHASE_ORDER_NUMBER_KEY, value: resolvedPurchaseOrderNumber }
-        : null,
-    ],
-  );
+  const mergedCustomAttributes = mergeCustomAttributes(currentDraft.customAttributes, [
+    { key: WORKFLOW_STATE_KEY, value: "submitted" },
+    { key: APPROVAL_STATE_KEY, value: "submitted" },
+    { key: APPROVAL_REASON_KEY, value: approvalReason },
+    { key: SUBMISSION_CHANNEL_KEY, value: resolvedSubmissionChannel },
+    { key: ORDER_SUBMISSION_TYPE_KEY, value: resolvedSubmissionType },
+    resolvedApproverEmail
+      ? { key: APPROVER_EMAIL_KEY, value: resolvedApproverEmail }
+      : null,
+    resolvedPurchaseOrderNumber
+      ? { key: PURCHASE_ORDER_NUMBER_KEY, value: resolvedPurchaseOrderNumber }
+      : null,
+    resolvedReviewUrl ? { key: REVIEW_URL_KEY, value: resolvedReviewUrl } : null,
+  ]);
 
   const mergedTags = mergeTags(currentDraft.tags, [
     "awaiting-approver-review",
@@ -263,6 +265,7 @@ export async function markDraftSubmittedForApproval({
       submissionChannel: resolvedSubmissionChannel,
       submissionType: resolvedSubmissionType,
       hasApproverEmail: Boolean(resolvedApproverEmail),
+      hasReviewUrl: Boolean(resolvedReviewUrl),
     },
     "Draft order marked as submitted for approval",
   );
@@ -328,7 +331,8 @@ async function getCurrentDraftSubmissionState({
   let json: GraphqlResponse<DraftSubmissionStateQueryResponse>;
 
   try {
-    json = (await response.json()) as GraphqlResponse<DraftSubmissionStateQueryResponse>;
+    json =
+      (await response.json()) as GraphqlResponse<DraftSubmissionStateQueryResponse>;
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Invalid JSON response";
@@ -473,7 +477,8 @@ async function updateDraftSubmissionState({
   let json: GraphqlResponse<DraftOrderUpdateMutationResponse>;
 
   try {
-    json = (await response.json()) as GraphqlResponse<DraftOrderUpdateMutationResponse>;
+    json =
+      (await response.json()) as GraphqlResponse<DraftOrderUpdateMutationResponse>;
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Invalid JSON response";
@@ -624,7 +629,8 @@ async function setSubmissionMetafields({
   let json: GraphqlResponse<MetafieldsSetMutationResponse>;
 
   try {
-    json = (await response.json()) as GraphqlResponse<MetafieldsSetMutationResponse>;
+    json =
+      (await response.json()) as GraphqlResponse<MetafieldsSetMutationResponse>;
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Invalid JSON response";
@@ -776,9 +782,19 @@ function inferSubmissionChannel(
   return "cart";
 }
 
-function inferSubmissionType(approvalReason: DraftApprovalReason): string {
+function inferSubmissionType({
+  approvalReason,
+  submissionChannel,
+}: {
+  approvalReason: DraftApprovalReason;
+  submissionChannel: DraftSubmissionChannel;
+}): string {
   if (approvalReason === "credit_limit_exceeded") {
     return "Credit Limit Approval";
+  }
+
+  if (submissionChannel === "checkout") {
+    return "Checkout Draft Approval";
   }
 
   return "Draft Order Request";
