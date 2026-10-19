@@ -49,6 +49,7 @@ class ApprovalEmailService {
     const normalizedSubject = normalizeText(subject);
     const normalizedText = normalizeText(text);
     const normalizedHtml = normalizeOptionalText(html);
+    const normalizedReplyTo = normalizeEmail(config.SENDGRID_REPLY_TO_EMAIL);
 
     if (!normalizedTo) {
       return {
@@ -69,6 +70,13 @@ class ApprovalEmailService {
       return {
         ok: false,
         error: `CC email is invalid: ${invalidCc}`,
+      };
+    }
+
+    if (normalizedReplyTo && !isValidEmail(normalizedReplyTo)) {
+      return {
+        ok: false,
+        error: "SENDGRID_REPLY_TO_EMAIL is invalid",
       };
     }
 
@@ -111,12 +119,17 @@ class ApprovalEmailService {
       personalization.cc = normalizedCc.map((email) => ({ email }));
     }
 
+    const from: Record<string, unknown> = {
+      email: config.SENDGRID_FROM_EMAIL,
+    };
+
+    if (normalizeText(config.SENDGRID_FROM_NAME)) {
+      from.name = normalizeText(config.SENDGRID_FROM_NAME);
+    }
+
     const payload: Record<string, unknown> = {
       personalizations: [personalization],
-      from: {
-        email: config.SENDGRID_FROM_EMAIL,
-        name: config.SENDGRID_FROM_NAME || undefined,
-      },
+      from,
       content,
       tracking_settings: {
         click_tracking: {
@@ -126,9 +139,9 @@ class ApprovalEmailService {
       },
     };
 
-    if (config.SENDGRID_REPLY_TO_EMAIL) {
+    if (normalizedReplyTo) {
       payload.reply_to = {
-        email: config.SENDGRID_REPLY_TO_EMAIL,
+        email: normalizedReplyTo,
       };
     }
 
@@ -152,6 +165,7 @@ class ApprovalEmailService {
           event: "approval-email.send.request-failed",
           to: normalizedTo,
           cc: normalizedCc,
+          hasCc: normalizedCc.length > 0,
           subject: normalizedSubject,
           message,
           error,
@@ -172,6 +186,7 @@ class ApprovalEmailService {
           event: "approval-email.send.success",
           to: normalizedTo,
           cc: normalizedCc,
+          hasCc: normalizedCc.length > 0,
           subject: normalizedSubject,
           statusCode: response.status,
           clickTrackingDisabled: true,
@@ -198,6 +213,7 @@ class ApprovalEmailService {
         event: "approval-email.send.failed",
         to: normalizedTo,
         cc: normalizedCc,
+        hasCc: normalizedCc.length > 0,
         subject: normalizedSubject,
         statusCode: response.status,
         responseText,

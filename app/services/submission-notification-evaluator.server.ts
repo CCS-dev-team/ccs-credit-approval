@@ -292,11 +292,16 @@ export class SubmissionNotificationEvaluatorService {
         : buildStandardApprovalHtmlBody(mergedDraft);
 
     const creatorEmail = normalizeEmail(mergedDraft.customerEmail);
-    const shouldSendCreatorEmail =
-      Boolean(creatorEmail) && creatorEmail !== approverEmail;
+    const ccEmail =
+      creatorEmail && creatorEmail !== approverEmail ? creatorEmail : undefined;
+
+    const shouldSendCreatorEmail = Boolean(
+      creatorEmail && creatorEmail !== approverEmail,
+    );
 
     const approverSendResult = await approvalEmailService.send({
       to: approverEmail,
+      cc: ccEmail,
       subject: approverSubject,
       text: approverText,
       html: approverHtml,
@@ -310,6 +315,7 @@ export class SubmissionNotificationEvaluatorService {
           draftOrderId: mergedDraft.id,
           approverEmail,
           creatorEmail,
+          ccApplied: Boolean(ccEmail),
           creatorEmailAttempted: shouldSendCreatorEmail,
           approvalReason,
           budgetStatus: mergedDraft.budgetStatus ?? null,
@@ -355,6 +361,7 @@ export class SubmissionNotificationEvaluatorService {
             draftOrderId: mergedDraft.id,
             approverEmail,
             creatorEmail,
+            ccApplied: Boolean(ccEmail),
             approvalReason,
             budgetStatus: mergedDraft.budgetStatus ?? null,
             statusCode: creatorSendResult.statusCode,
@@ -390,6 +397,7 @@ export class SubmissionNotificationEvaluatorService {
           draftOrderId: mergedDraft.id,
           approverEmail,
           creatorEmail,
+          ccApplied: Boolean(ccEmail),
           creatorEmailSent: shouldSendCreatorEmail,
           approvalReason,
           budgetStatus: mergedDraft.budgetStatus ?? null,
@@ -415,6 +423,7 @@ export class SubmissionNotificationEvaluatorService {
         draftOrderId: mergedDraft.id,
         approverEmail,
         creatorEmail,
+        ccApplied: Boolean(ccEmail),
         creatorEmailSent: shouldSendCreatorEmail,
         creatorEmailSkippedReason: !creatorEmail
           ? "missing_creator_email"
