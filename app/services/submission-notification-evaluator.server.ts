@@ -12,6 +12,7 @@ export type SubmissionNotificationReason =
   | "no_approver_email"
   | "not_relevant"
   | "email_failed"
+  | "creator_email_failed"
   | "mark_notified_failed";
 
 export interface SubmissionNotificationContext {
@@ -273,36 +274,35 @@ export class SubmissionNotificationEvaluatorService {
 
     const approvalReason = resolveApprovalReason(mergedDraft);
 
-    const subject =
+    const approverSubject =
       normalizeOptionalString(input.notificationContext?.emailSubject) ||
       (approvalReason === "credit_limit_exceeded"
         ? buildExceededApprovalSubject(mergedDraft)
         : buildStandardApprovalSubject(mergedDraft));
 
-    const text =
+    const approverText =
       normalizeOptionalString(input.notificationContext?.emailBody) ||
       (approvalReason === "credit_limit_exceeded"
         ? buildExceededApprovalTextBody(mergedDraft)
         : buildStandardApprovalTextBody(mergedDraft));
 
-    const html =
+    const approverHtml =
       approvalReason === "credit_limit_exceeded"
         ? buildExceededApprovalHtmlBody(mergedDraft)
         : buildStandardApprovalHtmlBody(mergedDraft);
 
     const creatorEmail = normalizeEmail(mergedDraft.customerEmail);
-    const ccEmail =
-      creatorEmail && creatorEmail !== approverEmail ? creatorEmail : undefined;
+    const shouldSendCreatorEmail =
+      Boolean(creatorEmail) && creatorEmail !== approverEmail;
 
-    const sendResult = await approvalEmailService.send({
+    const approverSendResult = await approvalEmailService.send({
       to: approverEmail,
-      cc: ccEmail,
-      subject,
-      text,
-      html,
+      subject: approverSubject,
+      text: approverText,
+      html: approverHtml,
     });
 
-    if (!sendResult.ok) {
+    if (!approverSendResult.ok) {
       logger.error(
         {
           event: "submission-notification.email.failed",
@@ -310,14 +310,14 @@ export class SubmissionNotificationEvaluatorService {
           draftOrderId: mergedDraft.id,
           approverEmail,
           creatorEmail,
-          ccApplied: Boolean(ccEmail),
+          creatorEmailAttempted: shouldSendCreatorEmail,
           approvalReason,
           budgetStatus: mergedDraft.budgetStatus ?? null,
-          statusCode: sendResult.statusCode,
-          error: sendResult.error,
+          statusCode: approverSendResult.statusCode,
+          error: approverSendResult.error,
           hasReviewUrl: Boolean(resolveReviewUrl(mergedDraft)),
         },
-        "Submission notification email failed",
+        "Approver submission notification email failed",
       );
 
       return {
@@ -327,6 +327,50 @@ export class SubmissionNotificationEvaluatorService {
         draftOrderId: mergedDraft.id,
         approverEmail,
       };
+    }
+
+    if (shouldSendCreatorEmail && creatorEmail) {
+      const creatorSubject = buildCreatorSubmittedSubject(mergedDraft);
+      const creatorText = buildCreatorSubmittedTextBody(
+        mergedDraft,
+        approvalReason,
+      );
+      const creatorHtml = buildCreatorSubmittedHtmlBody(
+        mergedDraft,
+        approvalReason,
+      );
+
+      const creatorSendResult = await approvalEmailService.send({
+        to: creatorEmail,
+        subject: creatorSubject,
+        text: creatorText,
+        html: creatorHtml,
+      });
+
+      if (!creatorSendResult.ok) {
+        logger.error(
+          {
+            event: "submission-notification.creator-email.failed",
+            shop: mergedDraft.shop,
+            draftOrderId: mergedDraft.id,
+            approverEmail,
+            creatorEmail,
+            approvalReason,
+            budgetStatus: mergedDraft.budgetStatus ?? null,
+            statusCode: creatorSendResult.statusCode,
+            error: creatorSendResult.error,
+          },
+          "Creator submission confirmation email failed",
+        );
+
+        return {
+          status: "failed",
+          reason: "creator_email_failed",
+          shop: mergedDraft.shop,
+          draftOrderId: mergedDraft.id,
+          approverEmail,
+        };
+      }
     }
 
     const notifiedAt = new Date().toISOString();
@@ -346,7 +390,7 @@ export class SubmissionNotificationEvaluatorService {
           draftOrderId: mergedDraft.id,
           approverEmail,
           creatorEmail,
-          ccApplied: Boolean(ccEmail),
+          creatorEmailSent: shouldSendCreatorEmail,
           approvalReason,
           budgetStatus: mergedDraft.budgetStatus ?? null,
           notifiedAt,
@@ -371,15 +415,20 @@ export class SubmissionNotificationEvaluatorService {
         draftOrderId: mergedDraft.id,
         approverEmail,
         creatorEmail,
-        ccApplied: Boolean(ccEmail),
+        creatorEmailSent: shouldSendCreatorEmail,
+        creatorEmailSkippedReason: !creatorEmail
+          ? "missing_creator_email"
+          : creatorEmail === approverEmail
+            ? "creator_matches_approver"
+            : null,
         companyLocationId: mergedDraft.companyLocationId,
         approvalReason,
         budgetStatus: mergedDraft.budgetStatus ?? null,
         notifiedAt,
-        statusCode: sendResult.statusCode,
+        approverStatusCode: approverSendResult.statusCode,
         hasReviewUrl: Boolean(resolveReviewUrl(mergedDraft)),
       },
-      "Submission notification email sent successfully",
+      "Submission notification emails sent successfully",
     );
 
     return {
@@ -520,6 +569,11 @@ function buildExceededApprovalSubject(draft: DraftSubmissionContext): string {
   return `Approval required: Credit limit exceeded for ${companyName} draft ${draftName}`;
 }
 
+function buildCreatorSubmittedSubject(draft: DraftSubmissionContext): string {
+  const draftName = draft.name?.trim() || draft.id;
+  return `Draft submitted for approval: ${draftName}`;
+}
+
 function buildStandardApprovalTextBody(draft: DraftSubmissionContext): string {
   const reviewUrl = resolveReviewUrl(draft);
   const invoiceUrl = resolveInvoiceUrl(draft);
@@ -600,6 +654,30 @@ function buildExceededApprovalTextBody(draft: DraftSubmissionContext): string {
   if (invoiceUrl) {
     lines.push(`Draft invoice: ${invoiceUrl}`);
   }
+
+  return lines.join("\n");
+}
+
+function buildCreatorSubmittedTextBody(
+  draft: DraftSubmissionContext,
+  approvalReason: "standard" | "credit_limit_exceeded",
+): string {
+  const lines: string[] = [
+    approvalReason === "credit_limit_exceeded"
+      ? "Your draft order has been submitted for approval because it exceeded the assigned credit limit."
+      : "Your draft order has been submitted for approval.",
+    "We have sent it to the approver for review.",
+    "You will receive another update once the order has been approved.",
+    "",
+    `Company: ${draft.companyName || "N/A"}`,
+    `Location: ${draft.companyLocationName || "N/A"}`,
+    `Draft order: ${draft.name || draft.id}`,
+    `Submitted at: ${formatDateTime(draft.createdAt)}`,
+    `Buyer: ${draft.customerName || "N/A"}`,
+    `Buyer email: ${draft.customerEmail || "N/A"}`,
+    `PO number: ${draft.poNumber || "N/A"}`,
+    `Total: ${formatMoney(draft.totalAmount, draft.currencyCode)}`,
+  ];
 
   return lines.join("\n");
 }
@@ -768,6 +846,50 @@ function buildExceededApprovalHtmlBody(draft: DraftSubmissionContext): string {
 
       ${primaryCta}
       ${secondaryCta}
+    </div>
+  `.trim();
+}
+
+function buildCreatorSubmittedHtmlBody(
+  draft: DraftSubmissionContext,
+  approvalReason: "standard" | "credit_limit_exceeded",
+): string {
+  const rows: Array<[string, string]> = [
+    ["Company", draft.companyName || "N/A"],
+    ["Location", draft.companyLocationName || "N/A"],
+    ["Draft order", draft.name || draft.id],
+    ["Submitted at", formatDateTime(draft.createdAt)],
+    ["Buyer", draft.customerName || "N/A"],
+    ["Buyer email", draft.customerEmail || "N/A"],
+    ["PO number", draft.poNumber || "N/A"],
+    ["Total", formatMoney(draft.totalAmount, draft.currencyCode)],
+  ];
+
+  const tableRows = rows
+    .map(
+      ([label, value]) => `
+        <tr>
+          <td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;background:#f9fafb;">${escapeHtml(label)}</td>
+          <td style="padding:8px 12px;border:1px solid #e5e7eb;">${escapeHtml(value)}</td>
+        </tr>
+      `,
+    )
+    .join("");
+
+  const intro =
+    approvalReason === "credit_limit_exceeded"
+      ? "Your draft order has been submitted for approval because it exceeded the assigned credit limit."
+      : "Your draft order has been submitted for approval.";
+
+  return `
+    <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5;color:#111827;">
+      <p>${escapeHtml(intro)}</p>
+      <p>We have sent it to the approver for review.</p>
+      <p>You will receive another update once the order has been approved.</p>
+
+      <table style="border-collapse:collapse;width:100%;max-width:720px;">
+        ${tableRows}
+      </table>
     </div>
   `.trim();
 }

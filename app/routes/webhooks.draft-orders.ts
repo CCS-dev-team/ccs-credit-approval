@@ -3,10 +3,20 @@ import { authenticate } from "../shopify.server";
 import { logger } from "../lib/logger.server";
 import { processSubmissionNotification } from "../services/process-submission-notification.server";
 
-type DraftOrderWebhookPayload = {
-  id?: number | string;
-  admin_graphql_api_id?: string;
-} | null | undefined;
+type DraftOrderWebhookPayload =
+  | {
+      id?: number | string;
+      admin_graphql_api_id?: string;
+    }
+  | null
+  | undefined;
+
+type SupportedDraftOrderTopic = "DRAFT_ORDERS_CREATE" | "DRAFT_ORDERS_UPDATE";
+
+const SUPPORTED_TOPICS: ReadonlySet<string> = new Set([
+  "DRAFT_ORDERS_CREATE",
+  "DRAFT_ORDERS_UPDATE",
+]);
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop, admin, payload } = await authenticate.webhook(request);
@@ -36,7 +46,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response("Missing admin client", { status: 500 });
   }
 
-  if (topic !== "DRAFT_ORDERS_CREATE" && topic !== "DRAFT_ORDERS_UPDATE") {
+  if (!isSupportedDraftOrderTopic(topic)) {
     logger.info(
       {
         event: "submission-notification.webhook.ignored-topic",
@@ -72,11 +82,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       shop,
       draftOrderId,
     },
-    "Received draft order webhook for submission notification processing",
+    "Received draft order webhook for notification processing",
   );
 
   try {
-    const result = await processSubmissionNotification({
+    const result = await processDraftOrderWebhook({
+      topic,
       shop,
       draftOrderId,
       graphql: (query, options) => admin.graphql(query, options),
@@ -111,12 +122,53 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         draftOrderId,
         error,
       },
-      "Unhandled exception while processing submission notification webhook",
+      "Unhandled exception while processing draft order webhook",
     );
 
     return new Response("Webhook processing error", { status: 500 });
   }
 };
+
+async function processDraftOrderWebhook({
+  topic,
+  shop,
+  draftOrderId,
+  graphql,
+}: {
+  topic: SupportedDraftOrderTopic;
+  shop: string;
+  draftOrderId: string;
+  graphql: (
+    query: string,
+    options?: { variables?: Record<string, unknown> },
+  ) => Promise<Response>;
+}) {
+  logger.info(
+    {
+      event: "submission-notification.webhook.dispatch",
+      topic,
+      shop,
+      draftOrderId,
+    },
+    "Dispatching draft order webhook to submission notification processor",
+  );
+
+  switch (topic) {
+    case "DRAFT_ORDERS_CREATE":
+    case "DRAFT_ORDERS_UPDATE":
+      return processSubmissionNotification({
+        shop,
+        draftOrderId,
+        graphql,
+      });
+  }
+}
+
+function isSupportedDraftOrderTopic(
+  topic: string,
+): topic is SupportedDraftOrderTopic {
+  return SUPPORTED_TOPICS.has(topic);
+}
 
 function extractDraftOrderId(payload: DraftOrderWebhookPayload): string | null {
   if (!payload || typeof payload !== "object") {
@@ -124,7 +176,7 @@ function extractDraftOrderId(payload: DraftOrderWebhookPayload): string | null {
   }
 
   if (payload.admin_graphql_api_id) {
-    return payload.admin_graphql_api_id;
+    return String(payload.admin_graphql_api_id);
   }
 
   if (payload.id !== null && payload.id !== undefined) {
