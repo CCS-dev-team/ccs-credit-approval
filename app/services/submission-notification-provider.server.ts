@@ -541,13 +541,17 @@ export class ShopifySubmissionNotificationDataProvider
       resolvePurchaseOrderNumber(draft.customAttributes) ??
       null;
 
-    const workflowApprovalState =
-      normalizeString(draft.metafieldApprovalState?.value) ??
-      resolveWorkflowApprovalState(draft.customAttributes);
-
     const rejectionReason =
       normalizeString(draft.metafieldRejectionReason?.value) ??
       resolveRejectionReason(draft.customAttributes);
+
+    const workflowApprovalState =
+      normalizeString(draft.metafieldApprovalState?.value) ??
+      resolveWorkflowApprovalState(draft.customAttributes, rejectionReason);
+
+    const reviewUrl = resolveReviewUrl(draft.customAttributes);
+    const invoiceUrl = normalizeString(draft.invoiceUrl);
+    const approvalLink = reviewUrl ?? invoiceUrl ?? null;
 
     logger.info(
       {
@@ -570,10 +574,16 @@ export class ShopifySubmissionNotificationDataProvider
         companyLocationId,
         hasCustomerEmail: Boolean(customerEmail),
         hasApproverEmail: Boolean(approverEmail),
-        approvalLinkType: draft.invoiceUrl ? "invoice" : "none",
+        approvalLinkType: reviewUrl
+          ? "review"
+          : invoiceUrl
+            ? "invoice"
+            : "none",
         status: normalizeString(draft.status),
         workflowApprovalState,
         hasRejectionReason: Boolean(rejectionReason),
+        hasReviewUrl: Boolean(reviewUrl),
+        hasInvoiceUrl: Boolean(invoiceUrl),
       },
       "Resolved draft notification context",
     );
@@ -653,9 +663,9 @@ export class ShopifySubmissionNotificationDataProvider
         draft.metafieldBudgetCompanyAmountExceededBy?.value,
       ),
 
-      approvalLink: normalizeString(draft.invoiceUrl),
-      reviewUrl: null,
-      invoiceUrl: normalizeString(draft.invoiceUrl),
+      approvalLink,
+      reviewUrl,
+      invoiceUrl,
     };
   }
 
@@ -892,27 +902,30 @@ function resolvePurchaseOrderNumber(
 
 function resolveWorkflowApprovalState(
   customAttributes?: Array<{ key?: string | null; value?: string | null }> | null,
+  rejectionReason?: string | null,
 ): string | null {
-  if (!customAttributes?.length) {
-    return null;
+  if (customAttributes?.length) {
+    const acceptedKeys = new Set([
+      "approval state",
+      "workflow state",
+      "workflow approval state",
+      "approval_state",
+      "workflow_state",
+      "workflow_approval_state",
+    ]);
+
+    for (const attribute of customAttributes) {
+      const key = normalizeCustomAttributeKey(attribute.key);
+      const value = normalizeString(attribute.value);
+
+      if (key && value && acceptedKeys.has(key)) {
+        return value;
+      }
+    }
   }
 
-  const acceptedKeys = new Set([
-    "approval state",
-    "workflow state",
-    "workflow approval state",
-    "approval_state",
-    "workflow_state",
-    "workflow_approval_state",
-  ]);
-
-  for (const attribute of customAttributes) {
-    const key = normalizeCustomAttributeKey(attribute.key);
-    const value = normalizeString(attribute.value);
-
-    if (key && value && acceptedKeys.has(key)) {
-      return value;
-    }
+  if (rejectionReason) {
+    return "rejected";
   }
 
   return null;
@@ -931,6 +944,36 @@ function resolveRejectionReason(
     "reason",
     "rejection_reason",
     "reject_reason",
+  ]);
+
+  for (const attribute of customAttributes) {
+    const key = normalizeCustomAttributeKey(attribute.key);
+    const value = normalizeString(attribute.value);
+
+    if (key && value && acceptedKeys.has(key)) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function resolveReviewUrl(
+  customAttributes?: Array<{ key?: string | null; value?: string | null }> | null,
+): string | null {
+  if (!customAttributes?.length) {
+    return null;
+  }
+
+  const acceptedKeys = new Set([
+    "review url",
+    "review link",
+    "approval review url",
+    "approval review link",
+    "approval_link",
+    "approval url",
+    "approval link",
+    "review_url",
   ]);
 
   for (const attribute of customAttributes) {

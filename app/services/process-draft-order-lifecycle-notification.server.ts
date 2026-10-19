@@ -29,14 +29,6 @@ export interface ProcessDraftOrderLifecycleNotificationInput {
   notificationContext?: DraftOrderLifecycleNotificationContext;
 }
 
-type DraftOrderLifecycleNotificationEvaluatorLike = {
-  evaluate: (input: {
-    shop: string;
-    draftOrderId: string;
-    notificationContext?: DraftOrderLifecycleNotificationContext;
-  }) => Promise<DraftOrderLifecycleNotificationResult>;
-};
-
 export async function processDraftOrderLifecycleNotification({
   shop,
   draftOrderId,
@@ -62,6 +54,10 @@ export async function processDraftOrderLifecycleNotification({
       hasCompanyName: Boolean(normalizedContext?.companyName),
       hasCompanyLocationName: Boolean(normalizedContext?.companyLocationName),
       hasRejectionReason: Boolean(normalizedContext?.rejectionReason),
+      inferredRejectedFromReason: Boolean(
+        normalizedContext?.rejectionReason &&
+          normalizedContext?.workflowApprovalState === "rejected",
+      ),
     },
     "Processing draft order lifecycle notification",
   );
@@ -70,9 +66,7 @@ export async function processDraftOrderLifecycleNotification({
   const evaluator = new DraftOrderLifecycleNotificationEvaluatorService(provider);
 
   try {
-    const result = await (
-      evaluator as DraftOrderLifecycleNotificationEvaluatorLike
-    ).evaluate({
+    const result = await evaluator.evaluate({
       shop,
       draftOrderId,
       notificationContext: normalizedContext,
@@ -126,18 +120,24 @@ function normalizeNotificationContext(
     return undefined;
   }
 
+  const rejectionReason = normalizeOptionalString(value.rejectionReason);
+  const workflowApprovalState = normalizeWorkflowApprovalState(
+    value.workflowApprovalState,
+    rejectionReason,
+  );
+
   const normalized: DraftOrderLifecycleNotificationContext = {
     approvalReason: normalizeOptionalString(value.approvalReason),
-    workflowApprovalState: normalizeOptionalString(value.workflowApprovalState),
-    creatorEmail: normalizeOptionalString(value.creatorEmail),
-    approverEmail: normalizeOptionalString(value.approverEmail),
+    workflowApprovalState,
+    creatorEmail: normalizeEmail(value.creatorEmail),
+    approverEmail: normalizeEmail(value.approverEmail),
     reviewUrl: normalizeOptionalString(value.reviewUrl),
     invoiceUrl: normalizeOptionalString(value.invoiceUrl),
     purchaseOrderNumber: normalizeOptionalString(value.purchaseOrderNumber),
     draftOrderName: normalizeOptionalString(value.draftOrderName),
     companyName: normalizeOptionalString(value.companyName),
     companyLocationName: normalizeOptionalString(value.companyLocationName),
-    rejectionReason: normalizeOptionalString(value.rejectionReason),
+    rejectionReason,
   };
 
   if (
@@ -159,9 +159,37 @@ function normalizeNotificationContext(
   return normalized;
 }
 
-function normalizeOptionalString(value: string | null | undefined) {
-  if (typeof value !== "string") return undefined;
+function normalizeOptionalString(
+  value: string | null | undefined,
+): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeEmail(
+  value: string | null | undefined,
+): string | undefined {
+  const normalized = normalizeOptionalString(value);
+  return normalized ? normalized.toLowerCase() : undefined;
+}
+
+function normalizeWorkflowApprovalState(
+  value: string | null | undefined,
+  rejectionReason?: string,
+): string | undefined {
+  const normalized = normalizeOptionalString(value)?.toLowerCase();
+
+  if (normalized) {
+    return normalized;
+  }
+
+  if (rejectionReason) {
+    return "rejected";
+  }
+
+  return undefined;
 }
