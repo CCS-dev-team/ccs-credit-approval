@@ -79,6 +79,9 @@ export class DraftOrderLifecycleNotificationEvaluatorService {
         hasCreatorEmail: Boolean(
           normalizeEmail(input.notificationContext?.creatorEmail),
         ),
+        hasReviewUrl: Boolean(
+          normalizeOptionalString(input.notificationContext?.reviewUrl),
+        ),
         hasInvoiceUrl: Boolean(
           normalizeOptionalString(input.notificationContext?.invoiceUrl),
         ),
@@ -400,7 +403,7 @@ function createSyntheticDraftContext({
     creatorRejectedNotifiedAt: null,
     rejectionReason,
 
-    approvalReason: normalizeOptionalString(context.approvalReason),
+    approvalReason: normalizeApprovalReason(context.approvalReason),
 
     budgetStatus: null,
     budgetReason: null,
@@ -450,7 +453,7 @@ function mergeDraftWithNotificationContext(
     rejectionReason:
       normalizeOptionalString(context?.rejectionReason) || draft.rejectionReason,
     approvalReason:
-      normalizeOptionalString(context?.approvalReason) || draft.approvalReason,
+      normalizeApprovalReason(context?.approvalReason) || draft.approvalReason,
   };
 }
 
@@ -467,6 +470,22 @@ function normalizeState(value?: string | null): string | null {
 function normalizeOptionalString(value?: string | null): string | null {
   const normalized = value?.trim();
   return normalized ? normalized : null;
+}
+
+function normalizeApprovalReason(
+  value?: string | null,
+): "standard" | "credit_limit_exceeded" | null {
+  const normalized = value?.trim().toLowerCase();
+
+  if (normalized === "standard") {
+    return "standard";
+  }
+
+  if (normalized === "credit_limit_exceeded") {
+    return "credit_limit_exceeded";
+  }
+
+  return null;
 }
 
 function resolveLifecycleState(
@@ -653,7 +672,7 @@ function buildRejectedTextBody(draft: DraftOrderLifecycleContext): string {
     `Company: ${draft.companyName || "N/A"}`,
     `Location: ${draft.companyLocationName || "N/A"}`,
     `Draft order: ${draft.name || draft.id}`,
-    `Updated at: ${formatDateTime(draft.updatedAt || draft.createdAt)}`,
+    `Rejected at: ${formatDateTime(draft.updatedAt || draft.createdAt)}`,
     `Buyer: ${draft.customerName || "N/A"}`,
     `Buyer email: ${draft.customerEmail || "N/A"}`,
     `PO number: ${draft.poNumber || "N/A"}`,
@@ -761,7 +780,7 @@ function buildRejectedHtmlBody(draft: DraftOrderLifecycleContext): string {
     ["Company", draft.companyName || "N/A"],
     ["Location", draft.companyLocationName || "N/A"],
     ["Draft order", draft.name || draft.id],
-    ["Updated at", formatDateTime(draft.updatedAt || draft.createdAt)],
+    ["Rejected at", formatDateTime(draft.updatedAt || draft.createdAt)],
     ["Buyer", draft.customerName || "N/A"],
     ["Buyer email", draft.customerEmail || "N/A"],
     ["PO number", draft.poNumber || "N/A"],
