@@ -418,3 +418,36 @@ export async function action({ request }: RouteArgs) {
       console.error("[quote] copy threw", e);
     }
   }
+  // Customer acknowledgement — Reply-To is sales@ so replies land in the inbox
+  await fetch("https://api.sendgrid.com/v3/mail/send", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.SENDGRID_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      personalizations: [{ to: [{ email }] }],
+      from: { email: FROM_EMAIL, name: FROM_NAME },
+      reply_to: { email: SALES_EMAIL },
+      subject: `We've got your quote request ${ref}`,
+      content: [
+        {
+          type: "text/plain",
+          value:
+            `Thanks ${name || "for your enquiry"} — we've received your quote request ${ref} ` +
+            `for ${lines.length} line${lines.length === 1 ? "" : "s"}.\n\n` +
+            `Our team will reply within one business day with pricing, freight and lead times.\n\n` +
+            `If anything changes, just reply to this email.\n\n` +
+            `Central Cleaning Supplies`,
+        },
+      ],
+      tracking_settings: {
+        click_tracking: { enable: false },
+        open_tracking: { enable: false },
+      },
+      categories: ["quote-request-ack"],
+    }),
+  }).catch((e) => console.error("[quote] ack failed", e));
+
+  return json({ ok: true, reference: ref, lines: lines.length });
+}
