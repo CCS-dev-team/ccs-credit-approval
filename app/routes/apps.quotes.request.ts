@@ -8,7 +8,12 @@
  * here when you want reporting.
  */
 import crypto from "node:crypto";
+import { unauthenticated } from "../shopify.server";
 
+/**
+ * Portable across Remix and React Router 7: no framework import, so this
+ * works whichever one the repo uses. Returns a plain Response.
+ */
 type RouteArgs = { request: Request };
 
 const json = (body: unknown, init?: number | ResponseInit) =>
@@ -21,11 +26,6 @@ const FROM_EMAIL = process.env.QUOTE_FROM_EMAIL ?? "quotes@centralcleaning.com.a
 const FROM_NAME = "Central Cleaning Supplies — Quotes";
 const SALES_EMAIL = process.env.QUOTE_SALES_EMAIL ?? "sales@centralcleaning.com.au";
 const BCC_EMAIL = process.env.QUOTE_BCC_EMAIL ?? "lee@centralcleaning.com.au";
-const ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
-const SHOP = process.env.SHOPIFY_SHOP_DOMAIN!;
-// Latest stable at time of writing. Bump quarterly; Shopify supports each
-// stable version for a minimum of 12 months.
-const API_VERSION = process.env.SHOPIFY_API_VERSION ?? "2026-10";
 const APP_SECRET = process.env.SHOPIFY_APP_SECRET;
 
 type IncomingItem = { id: number; key?: string; quantity: number };
@@ -54,27 +54,27 @@ const money = (n: number) =>
 
 function reference() {
   const y = new Date().getFullYear().toString().slice(-2);
+  // 5 base36 chars of entropy — collision-safe at quote volumes, human-readable
   const tail = crypto.randomBytes(4).toString("hex").slice(0, 5).toUpperCase();
   return `Q-${y}-${tail}`;
 }
 
-async function adminGraphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-  const res = await fetch(`https://${SHOP}/admin/api/${API_VERSION}/graphql.json`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": ADMIN_TOKEN,
-    },
-    body: JSON.stringify({ query, variables }),
-  });
-  if (!res.ok) throw new Error(`admin_http_${res.status}`);
+async function adminGraphql<T>(
+  shop: string,
+  query: string,
+  variables: Record<string, unknown>
+): Promise<T> {
+  const { admin } = await unauthenticated.admin(shop);
+  const res = await admin.graphql(query, { variables });
   const body = (await res.json()) as { data?: T; errors?: unknown };
-  if (body.errors) throw new Error("admin_graphql_error");
+  if (body.errors) {
+    throw new Error(`admin_graphql_error: ${JSON.stringify(body.errors).slice(0, 300)}`);
+  }
   return body.data as T;
 }
 
 /** Re-price the submitted lines from Shopify. Never trusts client prices. */
-async function priceLines(items: IncomingItem[]): Promise<PricedLine[]> {
+async function priceLines(items: IncomingItem[], shop: string): Promise<PricedLine[]> {
   const ids = items.map((i) => `gid://shopify/ProductVariant/${i.id}`);
   const data = await adminGraphql<{
     nodes: Array<{
@@ -85,6 +85,7 @@ async function priceLines(items: IncomingItem[]): Promise<PricedLine[]> {
       product: { title: string; featuredImage: { url: string } | null };
     } | null>;
   }>(
+    shop,
     `query Variants($ids: [ID!]!) {
        nodes(ids: $ids) {
          ... on ProductVariant {
@@ -105,7 +106,7 @@ async function priceLines(items: IncomingItem[]): Promise<PricedLine[]> {
   const lines: PricedLine[] = [];
   for (const item of items) {
     const v = byId.get(`gid://shopify/ProductVariant/${item.id}`);
-    if (!v) continue;
+    if (!v) continue; // variant gone — keep the line count honest by skipping
 
     const unit = parseFloat(v.price);
     lines.push({
@@ -120,6 +121,7 @@ async function priceLines(items: IncomingItem[]): Promise<PricedLine[]> {
   }
   return lines;
 }
+
 
 /**
  * Verify the Shopify app proxy signature.
@@ -169,6 +171,7 @@ function buildHtml(args: {
   name: string;
   company: string;
   note: string;
+  accountNumber?: string;
   isLoggedIn: boolean;
   cartPermalink: string;
   subtotal: number;
@@ -204,7 +207,7 @@ function buildHtml(args: {
         <tr><td style="color:#5d7075">Company</td><td>${esc(args.company) || "—"}</td></tr>
         <tr><td style="color:#5d7075">Email</td><td><a href="mailto:${esc(args.email)}" style="color:#0b6b63">${esc(args.email)}</a></td></tr>
         <tr><td style="color:#5d7075">Phone</td><td><a href="tel:${esc(args.phone)}" style="color:#0b6b63">${esc(args.phone)}</a></td></tr>
-        <tr><td style="color:#5d7075">Account</td><td>${args.isLoggedIn ? "Logged in" : "Guest — not logged in"}</td></tr>
+        <tr><td style="color:#5d7075">Account</td><td>${args.isLoggedIn ? `Logged in${args.accountNumber ? ` · ${esc(args.accountNumber)}` : ""}` : "Guest — not logged in"}</td></tr>
       </table>
     </td></tr>
 
@@ -279,7 +282,13 @@ export async function action({ request }: RouteArgs) {
     return json({ error: "invalid_signature" }, { status: 401 });
   }
 
+  // App proxy passes the signed logged-in customer id and the shop
   const proxyCustomerId = url.searchParams.get("logged_in_customer_id");
+  const shop = url.searchParams.get("shop") ?? "";
+  if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/i.test(shop)) {
+    console.warn("[quote] missing or invalid shop param", shop);
+    return json({ error: "invalid_shop" }, { status: 400 });
+  }
 
   let body: any;
   try {
@@ -304,7 +313,7 @@ export async function action({ request }: RouteArgs) {
 
   let lines: PricedLine[];
   try {
-    lines = await priceLines(items);
+    lines = await priceLines(items, shop);
   } catch (err) {
     console.error("[quote] pricing failed", err);
     return json({ error: "pricing_unavailable" }, { status: 503 });
@@ -316,8 +325,9 @@ export async function action({ request }: RouteArgs) {
   const total = Math.round((subtotal + gst) * 100) / 100;
   const ref = reference();
 
+  const storefront = process.env.STOREFRONT_URL ?? "https://www.centralcleaningsupplies.com.au";
   const permalink =
-    "https://" + SHOP + "/cart/" + items.map((i) => `${i.id}:${i.quantity}`).join(",");
+    storefront + "/cart/" + items.map((i) => `${i.id}:${i.quantity}`).join(",");
 
   const html = buildHtml({
     ref,
@@ -348,6 +358,7 @@ export async function action({ request }: RouteArgs) {
         {
           to: [{ email: SALES_EMAIL }],
           bcc: [{ email: BCC_EMAIL }],
+          // reply straight to the buyer
           custom_args: { quote_ref: ref },
         },
       ],
@@ -356,8 +367,8 @@ export async function action({ request }: RouteArgs) {
       subject,
       content: [{ type: "text/html", value: html }],
       tracking_settings: {
-        click_tracking: { enable: false },
-        open_tracking: { enable: false },
+        click_tracking: { enable: false },  // would rewrite the cart permalink
+        open_tracking: { enable: false },   // noise on an internal email
       },
       categories: ["quote-request"],
     }),
