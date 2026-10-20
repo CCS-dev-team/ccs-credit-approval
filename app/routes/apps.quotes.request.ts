@@ -346,70 +346,75 @@ export async function action({ request }: RouteArgs) {
 
   const subject = `Quote request ${ref} — ${company || name} — ${lines.length} line${lines.length === 1 ? "" : "s"}`;
 
-  // ---- send via SendGrid ----
-  const sendRes = await fetch("https://api.sendgrid.com/v3/mail/send", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.SENDGRID_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      personalizations: [
-        {
-          to: [{ email: SALES_EMAIL }],
-          bcc: [{ email: BCC_EMAIL }],
-          // reply straight to the buyer
-          custom_args: { quote_ref: ref },
-        },
-      ],
-      from: { email: FROM_EMAIL, name: FROM_NAME },
-      reply_to: { email, name: name || undefined },
-      subject,
-      content: [{ type: "text/html", value: html }],
-      tracking_settings: {
-        click_tracking: { enable: false },  // would rewrite the cart permalink
-        open_tracking: { enable: false },   // noise on an internal email
+    // ---- send via SendGrid ----
+  const mail = (payload: Record<string, unknown>) =>
+    fetch("https://api.sendgrid.com/v3/mail/send", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.SENDGRID_API_KEY}`,
+        "Content-Type": "application/json",
       },
-      categories: ["quote-request"],
-    }),
-  });
+      body: JSON.stringify(payload),
+    });
 
-  if (!sendRes.ok) {
-    const detail = await sendRes.text().catch(() => "");
-    console.error("[quote] sendgrid failed", sendRes.status, detail.slice(0, 500));
+  const internal: Record<string, unknown> = {
+    personalizations: [
+      { to: [{ email: SALES_EMAIL }], custom_args: { quote_ref: ref, role: "sales" } },
+    ],
+    from: { email: FROM_EMAIL, name: FROM_NAME },
+    reply_to: { email, name: name || undefined },
+    subject,
+    content: [{ type: "text/html", value: html }],
+    tracking_settings: {
+      click_tracking: { enable: false },  // would rewrite the cart permalink
+      open_tracking: { enable: false },   // noise on an internal email
+    },
+    categories: ["quote-request"],
+  };
+
+  const send = await mail(internal);
+  const msgId = send.headers.get("x-message-id") ?? "";
+
+  if (!send.ok) {
+    const detail = await send.text().catch(() => "");
+    console.error("[quote] sendgrid failed", send.status, detail.slice(0, 500));
     return json({ error: "send_failed" }, { status: 502 });
   }
+  console.log("[quote] sales copy accepted", ref, "to", SALES_EMAIL, "msg", msgId);
 
-  // Customer acknowledgement — Reply-To is sales@ so replies land in the inbox
-  await fetch("https://api.sendgrid.com/v3/mail/send", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.SENDGRID_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      personalizations: [{ to: [{ email }] }],
-      from: { email: FROM_EMAIL, name: FROM_NAME },
-      reply_to: { email: SALES_EMAIL },
-      subject: `We've got your quote request ${ref}`,
-      content: [
-        {
-          type: "text/plain",
-          value:
-            `Thanks ${name || "for your enquiry"} — we've received your quote request ${ref} ` +
-            `for ${lines.length} line${lines.length === 1 ? "" : "s"}.\n\n` +
-            `Our team will reply within one business day with pricing, freight and lead times.\n\n` +
-            `If anything changes, just reply to this email.\n\n` +
-            `Central Cleaning Supplies`,
-        },
-      ],
-      tracking_settings: {
-        click_tracking: { enable: false },
-        open_tracking: { enable: false },
-      },
-      categories: ["quote-request-ack"],
-    }),
-  }).catch((e) => console.error("[quote] ack failed", e));
+  /**
+   * Copy to the rep as its own send, not a BCC.
+   *
+   * A BCC rides inside the sales@ envelope: if the address sits on a
+   * SendGrid suppression list, or the receiving filter quarantines the
+   * second recipient, SendGrid still returns 202 and the sales@ copy
+   * arrives as though nothing was wrong. A separate send gives us a
+   * status code, an x-message-id and an Activity Feed row per recipient.
+   */
+  if (BCC_EMAIL && BCC_EMAIL !== SALES_EMAIL) {
+    const copyNote =
+      '<div style="margin-top:28px;padding-top:14px;border-top:1px solid #dfe6e5;' +
+      'font-family:Roboto,Helvetica,Arial,sans-serif;font-size:12px;color:#5d7075">' +
+      `Internal copy &mdash; also delivered to ${esc(SALES_EMAIL)}. ` +
+      `Reply to this email to answer the customer.</div>`;
 
-  return json({ ok: true, reference: ref, lines: lines.length });
-}
+    try {
+      const copy = await mail({
+        ...internal,
+        personalizations: [
+          { to: [{ email: BCC_EMAIL }], custom_args: { quote_ref: ref, role: "copy" } },
+        ],
+        subject: `[Copy] ${subject}`,
+        content: [{ type: "text/html", value: html + copyNote }],
+      });
+      const copyId = copy.headers.get("x-message-id") ?? "";
+      if (!copy.ok) {
+        const detail = await copy.text().catch(() => "");
+        console.error("[quote] copy rejected", copy.status, "to", BCC_EMAIL, detail.slice(0, 500));
+      } else {
+        console.log("[quote] copy accepted", ref, "to", BCC_EMAIL, "msg", copyId);
+      }
+    } catch (e) {
+      console.error("[quote] copy threw", e);
+    }
+  }
