@@ -22,7 +22,7 @@ const json = (body: unknown, init?: number | ResponseInit) =>
     headers: { "Content-Type": "application/json", ...(typeof init === "object" ? init.headers : {}) },
   });
 
-const FROM_EMAIL = process.env.QUOTE_FROM_EMAIL ?? "quotes@centralcleaning.com.au";
+const FROM_EMAIL = process.env.QUOTE_FROM_EMAIL ?? "sales@centralcleaning.com.au";
 const FROM_NAME = "Central Cleaning Supplies — Quotes";
 const SALES_EMAIL = process.env.QUOTE_SALES_EMAIL ?? "sales@centralcleaning.com.au";
 const BCC_EMAIL = process.env.QUOTE_BCC_EMAIL ?? "lee@centralcleaning.com.au";
