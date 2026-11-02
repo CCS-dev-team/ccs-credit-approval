@@ -4,7 +4,7 @@ application_url = "https://ccs-credit-approval-prod.onrender.com"
 embedded = true
 
 [access_scopes]
-scopes = "read_customers,write_products,write_metaobjects,write_metaobject_definitions,read_draft_orders,write_draft_orders"
+scopes = "write_app_proxy,read_customers,read_draft_orders,write_draft_orders,write_metaobject_definitions,write_metaobjects,write_products"
 
 [auth]
 redirect_urls = [ "https://ccs-credit-approval-prod.onrender.com/api/auth" ]
@@ -24,4 +24,7 @@ topics = [ "app/scopes_update" ]
 uri = "/webhooks/draft-orders"
 topics = [ "draft_orders/create", "draft_orders/update", "draft_orders/delete" ]
 
-
+[app_proxy]
+url = "https://ccs-credit-approval-prod.onrender.com/apps/quotes"
+prefix = "apps"
+subpath = "quotes"
